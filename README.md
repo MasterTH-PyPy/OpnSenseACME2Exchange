@@ -37,7 +37,7 @@ OPNsense-Cluster (ACME-Client → HAProxy)          Exchange-Cluster
 
 ## Voraussetzungen
 
-- **OPNsense**: ACME-Client mit HAProxy als „Automation“ (das Zertifikat wird an den HAProxy übergeben). SSH aktiviert, Benutzer `root` oder ein Benutzer mit `sudo` (Option „sudo“). Lesbar sein müssen `/usr/local/etc/haproxy.conf` und `/tmp/haproxy/ssl/*`.
+- **OPNsense**: ACME-Client mit HAProxy als „Automation“ (das Zertifikat wird an den HAProxy übergeben). SSH aktivieren unter *System → Einstellungen → Verwaltung → Secure Shell*, dort je nach Anmeldung „Root-Login erlauben“ und „Passwort-Login erlauben“, oder einen Key hinterlegen. Benutzer ist `root` oder ein Benutzer mit `sudo` (Option „sudo“). Lesbar sein müssen `/usr/local/etc/haproxy.conf` und `/tmp/haproxy/ssl/*`. Alle Befehle laufen über `/bin/sh -c`, die csh/tcsh-Login-Shell von root ist also egal.
 - **Exchange**: Das Konto braucht die Rolle *Organization Management* bzw. *Server Management*. Remote-PowerShell (`http(s)://<server>/PowerShell/`) muss erreichbar sein. Für die optionale `iisreset`-Funktion zusätzlich WinRM 5985 und lokale Adminrechte.
 - **Rechner, auf dem das Tool läuft**: Domänenmitglied (für die AD-Abfrage und Kerberos), Windows PowerShell 5.1, bei der Variante *framework-dependent* zusätzlich die .NET 10 Desktop Runtime.
 - **ACME-Client**: Für Exchange **RSA** (2048/4096) als Schlüsseltyp wählen. ECDSA unterstützt Exchange nur eingeschränkt.

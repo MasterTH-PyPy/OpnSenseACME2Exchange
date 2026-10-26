@@ -103,6 +103,9 @@ public sealed class FakeOpnSense : ISshSessionFactory
         {
             owner.Commands.Add($"{host}: {command}");
             var cmd = command.StartsWith("sudo -n ") ? command[8..] : command;
+            // Wie auf der echten OPNsense (Login-Shell csh): nur über /bin/sh gekapselte Befehle sind gültig
+            if (!cmd.StartsWith("/bin/sh -c '")) return new SshResult(127, "", "csh: nicht über /bin/sh gekapselt");
+            cmd = UnquoteSh(cmd[11..]);
             var files = owner.Files.TryGetValue(host, out var f) ? f : new Dictionary<string, string>();
 
             if (cmd.StartsWith("cat -- '"))
@@ -124,6 +127,21 @@ public sealed class FakeOpnSense : ISshSessionFactory
         }
 
         public void Dispose() { }
+
+        /// <summary>Löst eine Ebene sh-Quoting auf ('a'\''b' → a'b).</summary>
+        public static string UnquoteSh(string s)
+        {
+            var sb = new StringBuilder();
+            bool inQuote = false;
+            for (int i = 0; i < s.Length; i++)
+            {
+                char c = s[i];
+                if (c == '\'') { inQuote = !inQuote; continue; }
+                if (!inQuote && c == '\\' && i + 1 < s.Length) { sb.Append(s[++i]); continue; }
+                sb.Append(c);
+            }
+            return sb.ToString();
+        }
     }
 }
 

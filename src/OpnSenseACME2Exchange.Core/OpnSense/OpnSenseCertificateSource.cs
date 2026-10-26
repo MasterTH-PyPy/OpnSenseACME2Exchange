@@ -79,12 +79,23 @@ public sealed class OpnSenseCertificateSource : ICertificateSource
 
     public static bool IsSafePath(string path) => SafePath.IsMatch(path) && !path.Contains("..");
 
-    private string Cmd(string command) => _settings.UseSudo ? "sudo -n " + command : command;
+    /// <summary>
+    /// Führt ein Kommando über /bin/sh aus. Wichtig: Die Login-Shell von root auf der OPNsense ist csh/tcsh,
+    /// dort wären "2&gt;/dev/null" oder "2&gt;&amp;1" Syntaxfehler. Mit sudo läuft die komplette sh-Zeile privilegiert.
+    /// </summary>
+    public static string ShellCommand(string script, bool privileged, bool useSudo)
+    {
+        var full = "/bin/sh -c " + Quote(script);
+        return privileged && useSudo ? "sudo -n " + full : full;
+    }
+
+    private SshResult Sh(ISshSession session, string script, bool privileged = false) =>
+        session.Run(ShellCommand(script, privileged, _settings.UseSudo), Timeout);
 
     private string ReadFile(ISshSession session, string path)
     {
         if (!IsSafePath(path)) throw new InvalidOperationException($"Unzulässiger Pfad: {path}");
-        var r = session.Run(Cmd("cat -- " + Quote(path)), Timeout);
+        var r = Sh(session, "cat -- " + Quote(path), privileged: true);
         if (r.ExitCode != 0)
             throw new IOException($"'{path}' konnte nicht gelesen werden (Exit {r.ExitCode}): {r.StdErr.Trim()}");
         return r.StdOut;
@@ -93,7 +104,7 @@ public sealed class OpnSenseCertificateSource : ICertificateSource
     private List<string> ListPemFiles(ISshSession session, string dir)
     {
         if (!IsSafePath(dir)) throw new InvalidOperationException($"Unzulässiger Pfad: {dir}");
-        var r = session.Run(Cmd($"find {Quote(dir.TrimEnd('/'))} -maxdepth 1 -type f -name '*.pem'"), Timeout);
+        var r = Sh(session, $"find {Quote(dir.TrimEnd('/'))} -maxdepth 1 -type f -name '*.pem'", privileged: true);
         return r.ExitCode != 0
             ? new List<string>()
             : r.StdOut.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
@@ -107,19 +118,19 @@ public sealed class OpnSenseCertificateSource : ICertificateSource
             using var s = _factory.Open(node);
             st.Reachable = true;
 
-            var v = s.Run("opnsense-version 2>/dev/null || uname -sr", Timeout);
+            var v = Sh(s, "opnsense-version 2>/dev/null || uname -sr");
             st.Version = v.StdOut.Trim().Split('\n').FirstOrDefault();
 
-            var carp = s.Run("ifconfig -a | grep 'carp:' || true", Timeout);
+            var carp = Sh(s, "ifconfig -a | grep 'carp:' || true");
             st.Carp = ParseCarp(carp.StdOut);
 
-            var hp = s.Run("pgrep -x haproxy >/dev/null 2>&1 && echo RUNNING || echo STOPPED", Timeout);
+            var hp = Sh(s, "pgrep -x haproxy >/dev/null 2>&1 && echo RUNNING || echo STOPPED");
             st.HaproxyRunning = hp.StdOut.Contains("RUNNING");
 
             var path = _settings.HaproxyConfigPath;
             if (IsSafePath(path))
             {
-                var t = s.Run(Cmd("test -r " + Quote(path)) + " && echo OK || echo NO", Timeout);
+                var t = Sh(s, "test -r " + Quote(path) + " && echo OK || echo NO", privileged: true);
                 st.ConfigReadable = t.StdOut.Contains("OK");
             }
         }

@@ -400,7 +400,10 @@ Test("Engine: OPNsense mit sudo, Pfade werden gequotet", () =>
     cfg.OpnSense.UseSudo = true;
     var r = Engine(cfg, opn, ex).Run(true, CancellationToken.None);
     Assert.True(r.Certificate != null, "gefunden");
-    Assert.True(opn.Commands.Any(c => c.Contains("sudo -n cat -- '/usr/local/etc/haproxy.conf'")), "sudo + quoting");
+    Assert.True(opn.Commands.Any(c => c.Contains("sudo -n /bin/sh -c 'cat -- ")), "sudo + /bin/sh");
+    Assert.True(opn.Commands.Any(c => c.Contains("/usr/local/etc/haproxy.conf")), "Pfad übergeben");
+    Assert.False(opn.Commands.Any(c => c.Contains("sudo -n /bin/sh -c 'opnsense-version")), "kein sudo für unprivilegierte Abfragen");
+    Assert.True(opn.Commands.All(c => c.Contains(": /bin/sh -c '") || c.Contains(": sudo -n /bin/sh -c '")), "alles über /bin/sh (csh-sicher)");
     Assert.False(OpnSenseCertificateSource.IsSafePath("/tmp/x;rm -rf /"), "Injection geblockt");
     Assert.False(OpnSenseCertificateSource.IsSafePath("/tmp/../etc/passwd"), "Traversal geblockt");
 });
