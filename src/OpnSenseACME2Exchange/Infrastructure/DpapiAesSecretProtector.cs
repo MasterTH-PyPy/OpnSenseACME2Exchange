@@ -1,6 +1,4 @@
-using System.Security.AccessControl;
 using System.Security.Cryptography;
-using System.Security.Principal;
 using System.Text;
 using OpnSenseACME2Exchange.Core.Config;
 
@@ -8,8 +6,7 @@ namespace OpnSenseACME2Exchange.Infrastructure;
 
 /// <summary>
 /// AES-256-GCM mit zufälligem Master-Key. Der Master-Key liegt DPAPI-geschützt (LocalMachine-Scope + Entropy)
-/// in key.bin; die Datei ist per ACL auf SYSTEM, Administratoren und den anlegenden Benutzer beschränkt.
-/// Damit können GUI und geplante Aufgabe (anderer Benutzer, gleiche Maschine) dieselbe Konfiguration lesen.
+/// in key.bin. Den Zugriff begrenzt die ACL des Datenverzeichnisses (SYSTEM, Administratoren, Dienstkonto).
 /// </summary>
 public sealed class DpapiAesSecretProtector : ISecretProtector
 {
@@ -30,27 +27,7 @@ public sealed class DpapiAesSecretProtector : ISecretProtector
         var key = RandomNumberGenerator.GetBytes(32);
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(_keyPath))!);
         File.WriteAllBytes(_keyPath, ProtectedData.Protect(key, Entropy, DataProtectionScope.LocalMachine));
-        TryRestrictAcl(_keyPath);
         return key;
-    }
-
-    private static void TryRestrictAcl(string path)
-    {
-        try
-        {
-            var sec = new FileSecurity();
-            sec.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
-            var full = FileSystemRights.FullControl;
-            sec.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), full, AccessControlType.Allow));
-            sec.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null), full, AccessControlType.Allow));
-            var me = WindowsIdentity.GetCurrent().User;
-            if (me != null) sec.AddAccessRule(new FileSystemAccessRule(me, full, AccessControlType.Allow));
-            new FileInfo(path).SetAccessControl(sec);
-        }
-        catch
-        {
-            // ACL ist Härtung, kein Muss (z.B. auf FAT/Netzlaufwerk)
-        }
     }
 
     public string Protect(string plain)

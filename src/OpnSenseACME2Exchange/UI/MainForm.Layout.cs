@@ -9,8 +9,9 @@ partial class MainForm
     private TabPage _pageOpn = null!, _pageHaproxy = null!, _pageExchange = null!, _pageRun = null!, _pageLog = null!;
     private ToolStripStatusLabel _status = null!, _statusNext = null!;
     private ToolStripProgressBar _progress = null!;
-    private NotifyIcon _tray = null!;
-    private System.Windows.Forms.Timer _schedulerTimer = null!, _logTimer = null!;
+    private ToolStripStatusLabel _statusConn = null!;
+    private System.Windows.Forms.Timer _statusTimer = null!, _logTimer = null!;
+    private TabPage _pageService = null!;
 
     // OPNsense
     private DataGridView _gridNodes = null!;
@@ -42,7 +43,7 @@ partial class MainForm
     private Button _btnDryRun = null!, _btnRunNow = null!, _btnCancel = null!;
     private CheckBox _chkAuto = null!, _chkAutoDryRun = null!;
     private DateTimePicker _dtpAutoTime = null!;
-    private Label _lblNextRun = null!, _lblLastRun = null!, _lblRunCert = null!;
+    private Label _lblNextRun = null!, _lblLastRun = null!, _lblRetry = null!, _lblRunCert = null!;
     private DataGridView _gridResults = null!;
 
     // Log
@@ -52,6 +53,12 @@ partial class MainForm
     private CheckBox _chkDebug = null!, _chkAutoScroll = null!;
 
     private Button _btnSave = null!;
+
+    // Dienst
+    private TextBox _txtServiceHost = null!, _txtSvcAccount = null!, _txtSvcPassword = null!, _txtSvcAccess = null!, _txtSvcLog = null!;
+    private Button _btnConnect = null!, _btnSvcInstall = null!, _btnSvcUpdate = null!, _btnSvcStart = null!, _btnSvcStop = null!,
+        _btnSvcUninstall = null!, _btnSvcAccess = null!;
+    private Label _lblConn = null!, _lblSvcInstalled = null!;
     private SplitContainer _splitHaproxy = null!, _splitLog = null!;
 
     private void BuildUi()
@@ -70,16 +77,18 @@ partial class MainForm
         _pageExchange = new TabPage("Exchange") { Padding = new Padding(8), UseVisualStyleBackColor = true };
         _pageRun = new TabPage("Ausführung") { Padding = new Padding(8), UseVisualStyleBackColor = true };
         _pageLog = new TabPage("Log") { Padding = new Padding(8), UseVisualStyleBackColor = true };
-        _tabs.TabPages.AddRange(new[] { _pageOpn, _pageHaproxy, _pageExchange, _pageRun, _pageLog });
+        _pageService = new TabPage("Dienst") { Padding = new Padding(8), UseVisualStyleBackColor = true };
+        _tabs.TabPages.AddRange(new[] { _pageOpn, _pageHaproxy, _pageExchange, _pageRun, _pageLog, _pageService });
 
         BuildOpnSensePage();
         BuildHaproxyPage();
         BuildExchangePage();
         BuildRunPage();
         BuildLogPage();
+        BuildServicePage();
 
         // Fußzeile
-        _btnSave = Btn("Konfiguration speichern", (_, _) => SaveConfig(showMessage: true));
+        _btnSave = Btn("Konfiguration im Dienst speichern", async (_, _) => await SaveConfigAsync(showMessage: true));
         var footer = new FlowLayoutPanel
         {
             Dock = DockStyle.Bottom,
@@ -92,26 +101,18 @@ partial class MainForm
         var strip = new StatusStrip { SizingGrip = true };
         _status = new ToolStripStatusLabel("Bereit") { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
         _statusNext = new ToolStripStatusLabel("Auto-Modus aus");
+        _statusConn = new ToolStripStatusLabel("Dienst: nicht verbunden") { BorderSides = ToolStripStatusLabelBorderSides.Left };
         _progress = new ToolStripProgressBar { Style = ProgressBarStyle.Marquee, MarqueeAnimationSpeed = 0, Visible = false, Width = 140 };
-        strip.Items.AddRange(new ToolStripItem[] { _status, _progress, _statusNext });
+        strip.Items.AddRange(new ToolStripItem[] { _status, _progress, _statusNext, _statusConn });
 
         Controls.Add(_tabs);
         Controls.Add(footer);
         Controls.Add(strip);
 
-        // Infobereich
-        var menu = new ContextMenuStrip();
-        menu.Items.Add("Öffnen", null, (_, _) => RestoreFromTray());
-        menu.Items.Add("Jetzt prüfen (Dry-Run)", null, async (_, _) => { RestoreFromTray(); await StartRunAsync(dryRun: true, unattended: false); });
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Beenden", null, (_, _) => { _exitRequested = true; Close(); });
-        _tray = new NotifyIcon { Icon = Icon, Text = "OpnSenseACME2Exchange", ContextMenuStrip = menu, Visible = true };
-        _tray.DoubleClick += (_, _) => RestoreFromTray();
-
-        _schedulerTimer = new System.Windows.Forms.Timer { Interval = 30_000 };
-        _schedulerTimer.Tick += async (_, _) => await SchedulerTickAsync();
+        _statusTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+        _statusTimer.Tick += async (_, _) => await PollStatusAsync();
         _logTimer = new System.Windows.Forms.Timer { Interval = 1500 };
-        _logTimer.Tick += (_, _) => PollLog();
+        _logTimer.Tick += async (_, _) => await PollLogAsync();
     }
 
     private void BuildOpnSensePage()
@@ -126,7 +127,7 @@ partial class MainForm
         _gridNodes.Columns.Add(Col("Status", "Status", 40, readOnly: true));
 
         _btnTestNodes = Btn("Verbindung testen", async (_, _) => await TestNodesAsync());
-        _btnResetHostKey = Btn("Hostkey der Auswahl zurücksetzen", (_, _) => ResetHostKeys());
+        _btnResetHostKey = Btn("Hostkey der Auswahl zurücksetzen", async (_, _) => await ResetHostKeysAsync());
         var nodePanel = new TableLayoutPanel { ColumnCount = 1, RowCount = 2 };
         nodePanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         nodePanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -156,7 +157,7 @@ partial class MainForm
             ("Benutzer:", _txtSshUser),
             ("Anmeldung:", Flow(_rbSshPassword, _rbSshKey)),
             ("Passwort:", _txtSshPassword),
-            ("Key-Datei:", Flow(_txtKeyPath, btnKey)),
+            ("Key-Datei:", Flow(_txtKeyPath, btnKey, Lbl("(Pfad auf dem Dienst-Rechner, lesbar für das Dienstkonto)"))),
             ("Key-Passphrase:", _txtKeyPassphrase),
             ("", Flow(_chkSudo, _chkPreferMaster)),
             ("HAProxy-Konfiguration:", _txtHaproxyPath),
@@ -249,7 +250,7 @@ partial class MainForm
         gridPanel.Controls.Add(_gridServers, 0, 1);
         var grpServers = Grp("Exchange-Server im Cluster", gridPanel, DockStyle.Fill);
 
-        _rbExCurrentUser = new RadioButton { Text = "Angemeldeter Benutzer (Kerberos/SSO)", AutoSize = true, Checked = true };
+        _rbExCurrentUser = new RadioButton { Text = "Dienstkonto (Kerberos)", AutoSize = true, Checked = true };
         _rbExOtherUser = new RadioButton { Text = "Anderes Konto:", AutoSize = true };
         _rbExCurrentUser.CheckedChanged += (_, _) => UpdateExchangeAuthUi();
         _txtExUser = Txt(220);
@@ -293,36 +294,29 @@ partial class MainForm
 
     private void BuildRunPage()
     {
-        _btnDryRun = Btn("Prüfen (Dry-Run)", async (_, _) => await StartRunAsync(dryRun: true, unattended: false), 170);
-        _btnRunNow = Btn("Jetzt austauschen", async (_, _) => await StartRunAsync(dryRun: false, unattended: false), 170);
-        _btnCancel = Btn("Abbrechen", (_, _) => _cts?.Cancel(), 110);
+        _btnDryRun = Btn("Prüfen (Dry-Run)", async (_, _) => await StartRunAsync(dryRun: true), 170);
+        _btnRunNow = Btn("Jetzt austauschen", async (_, _) => await StartRunAsync(dryRun: false), 170);
+        _btnCancel = Btn("Abbrechen", async (_, _) => await CancelAsync(), 110);
         _btnCancel.Enabled = false;
         _btnRunNow.Font = BoldFont;
 
-        _chkAuto = Chk("Auto-Modus: einmal täglich um");
+        _chkAuto = Chk("Täglich automatisch um");
         _dtpAutoTime = new DateTimePicker { Format = DateTimePickerFormat.Custom, CustomFormat = "HH:mm", ShowUpDown = true, Width = 70 };
         _chkAutoDryRun = Chk("nur Dry-Run");
-        _chkAuto.CheckedChanged += (_, _) => OnAutoSettingsChanged();
-        _dtpAutoTime.ValueChanged += (_, _) => OnAutoSettingsChanged();
-        _chkAutoDryRun.CheckedChanged += (_, _) => OnAutoSettingsChanged();
-        _lblNextRun = Lbl("");
-        _lblLastRun = Lbl("");
-        var cliHint = Lbl("Alternativ über die Windows-Aufgabenplanung: OpnSenseACME2Exchange.exe --run   (bzw. --run --dry-run)");
-        var btnCopy = Btn("Befehl kopieren", (_, _) =>
-        {
-            Clipboard.SetText($"\"{Path.Combine(AppContext.BaseDirectory, "OpnSenseACME2Exchange.exe")}\" --run");
-            _status.Text = "Befehl in die Zwischenablage kopiert.";
-        });
+        var btnAutoSave = Btn("Übernehmen", async (_, _) => await SaveConfigAsync(showMessage: false));
+        _lblNextRun = Lbl("–");
+        _lblLastRun = Lbl("–");
+        _lblRetry = Lbl("");
 
         var auto = Rows(
-            ("", Flow(_chkAuto, _dtpAutoTime, _chkAutoDryRun)),
+            ("", Flow(_chkAuto, _dtpAutoTime, _chkAutoDryRun, btnAutoSave)),
             ("Nächster Lauf:", _lblNextRun),
-            ("Letzter Auto-Lauf:", _lblLastRun),
-            ("", Flow(cliHint, btnCopy)),
-            ("", Lbl("Der Auto-Modus läuft, solange das Programm geöffnet ist (minimiert im Infobereich).")));
+            ("Letzter Lauf:", _lblLastRun),
+            ("", _lblRetry),
+            ("", Lbl("Der Zeitplan läuft im Windows-Dienst – die GUI muss dafür nicht geöffnet sein. " +
+                     "Scheitert ein geplanter Lauf, wiederholt der Dienst ihn bis zu 3× stündlich.")));
 
-        var actions = Flow(_btnDryRun, _btnRunNow, _btnCancel);
-        var grpAction = Grp("Manuell", actions);
+        var grpAction = Grp("Manuell (führt der Dienst aus)", Flow(_btnDryRun, _btnRunNow, _btnCancel));
         var grpAuto = Grp("Automatik", auto);
 
         _lblRunCert = Lbl("");
@@ -340,7 +334,7 @@ partial class MainForm
         var resPanel = new Panel { Dock = DockStyle.Fill };
         resPanel.Controls.Add(_gridResults);
         resPanel.Controls.Add(_lblRunCert);
-        var grpRes = Grp("Ergebnis des letzten Laufs", resPanel, DockStyle.Fill);
+        var grpRes = Grp("Ergebnis (live während des Laufs)", resPanel, DockStyle.Fill);
 
         _pageRun.Controls.Add(grpRes);
         _pageRun.Controls.Add(grpAuto);
@@ -351,17 +345,12 @@ partial class MainForm
     {
         _lstLogFiles = new ListBox { Dock = DockStyle.Fill, IntegralHeight = false };
         _lstLogFiles.SelectedIndexChanged += (_, _) => LoadSelectedLog();
-        var btnRefresh = Btn("Aktualisieren", (_, _) => RefreshLogFiles());
-        var btnOpen = Btn("Ordner öffnen", (_, _) =>
-        {
-            Directory.CreateDirectory(Core.Logging.Log.Directory);
-            System.Diagnostics.Process.Start("explorer.exe", Core.Logging.Log.Directory);
-        });
+        var btnRefresh = Btn("Aktualisieren", async (_, _) => await RefreshLogFilesAsync());
         var left = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
         left.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         left.Controls.Add(_lstLogFiles, 0, 0);
-        left.Controls.Add(Flow(btnRefresh, btnOpen), 0, 1);
+        left.Controls.Add(Flow(btnRefresh), 0, 1);
 
         _txtLog = new TextBox
         {
@@ -380,19 +369,61 @@ partial class MainForm
         split.Panel2.Controls.Add(Grp("Inhalt (live)", right, DockStyle.Fill));
 
         _txtLogDir = Txt(380);
-        _txtLogDir.PlaceholderText = "leer = Ordner \"Logs\" neben der EXE";
-        var btnDir = Btn("…", (_, _) =>
-        {
-            using var dlg = new FolderBrowserDialog { Description = "Log-Verzeichnis wählen" };
-            if (dlg.ShowDialog(this) == DialogResult.OK) _txtLogDir.Text = dlg.SelectedPath;
-        });
+        _txtLogDir.PlaceholderText = @"leer = %ProgramData%\OpnSenseACME2Exchange\Logs (Pfad auf dem Dienst-Rechner)";
         _numRetain = new NumericUpDown { Minimum = 1, Maximum = 3650, Width = 70 };
         _chkDebug = Chk("Debug-Ausgaben");
         var settings = Rows(
-            ("Log-Verzeichnis:", Flow(_txtLogDir, btnDir)),
+            ("Log-Verzeichnis:", _txtLogDir),
             ("Aufbewahrung (Tage):", Flow(_numRetain, _chkDebug)));
 
         _pageLog.Controls.Add(split);
         _pageLog.Controls.Add(Grp("Einstellungen", settings, DockStyle.Bottom));
+    }
+
+    private void BuildServicePage()
+    {
+        _txtServiceHost = Txt(220);
+        _txtServiceHost.PlaceholderText = ". = dieser Rechner";
+        _btnConnect = Btn("Verbinden", async (_, _) => await ConnectAsync(showErrors: true));
+        _lblConn = Lbl("Nicht verbunden.");
+        var conn = Rows(
+            ("Dienst auf Rechner:", Flow(_txtServiceHost, _btnConnect)),
+            ("Status:", _lblConn),
+            ("", Lbl("Die GUI kann auch den Dienst auf einem anderen Server bedienen (Named Pipe über SMB/445).")));
+
+        _lblSvcInstalled = Lbl("–");
+        _txtSvcAccount = Txt(260);
+        _txtSvcAccount.PlaceholderText = @"DOMÄNE\gmsa-acme$  oder  DOMÄNE\svc-acme";
+        _txtSvcPassword = Txt(200, password: true);
+        _txtSvcPassword.PlaceholderText = "bei gMSA leer lassen";
+        _txtSvcAccess = Txt(360);
+        _txtSvcAccess.PlaceholderText = @"optional, z.B. DOMÄNE\IT-Admins (kommagetrennt)";
+
+        _btnSvcInstall = Btn("Installieren / Konto ändern", async (_, _) => await AdminAsync(ServiceHost.AdminAction.Install));
+        _btnSvcUpdate = Btn("Programm aktualisieren", async (_, _) => await AdminAsync(ServiceHost.AdminAction.Update));
+        _btnSvcStart = Btn("Starten", async (_, _) => await AdminAsync(ServiceHost.AdminAction.Start));
+        _btnSvcStop = Btn("Stoppen", async (_, _) => await AdminAsync(ServiceHost.AdminAction.Stop));
+        _btnSvcUninstall = Btn("Deinstallieren", async (_, _) => await AdminAsync(ServiceHost.AdminAction.Uninstall));
+        _btnSvcAccess = Btn("Zugriff setzen", async (_, _) => await AdminAsync(ServiceHost.AdminAction.Access));
+
+        var install = Rows(
+            ("Installiert:", _lblSvcInstalled),
+            ("Dienstkonto:", _txtSvcAccount),
+            ("Passwort:", _txtSvcPassword),
+            ("GUI-Zugriff zusätzlich:", _txtSvcAccess),
+            ("", Flow(_btnSvcInstall, _btnSvcUpdate, _btnSvcStart, _btnSvcStop, _btnSvcAccess, _btnSvcUninstall)),
+            ("", Lbl("Erfordert Administratorrechte (UAC). Das Dienstkonto braucht Exchange-RBAC (Organization bzw. Server Management) " +
+                     "und erhält automatisch 'Als Dienst anmelden'. Das Programm wird nach " + Infrastructure.AppPaths.InstallDirectory +
+                     " kopiert, Daten liegen in " + Infrastructure.AppPaths.DataDirectory + ".")));
+
+        _txtSvcLog = new TextBox
+        {
+            Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical,
+            Font = MonoFont, BackColor = SystemColors.Window
+        };
+
+        _pageService.Controls.Add(Grp("Protokoll der Dienstverwaltung", _txtSvcLog, DockStyle.Fill));
+        _pageService.Controls.Add(Grp("Windows-Dienst auf diesem Rechner", install));
+        _pageService.Controls.Add(Grp("Verbindung", conn));
     }
 }

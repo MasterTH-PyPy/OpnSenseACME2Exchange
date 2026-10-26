@@ -1,5 +1,3 @@
-using System.Text.Json.Serialization;
-
 namespace OpnSenseACME2Exchange.Core.Config;
 
 public sealed class AppConfig
@@ -75,8 +73,9 @@ public sealed class ExchangeServerEntry
     /// <summary>Zuletzt funktionierende Remote-PowerShell-URI (wird selbstheilend gelernt).</summary>
     public string? PowerShellUri { get; set; }
 
-    [JsonIgnore] public string? LastStatus { get; set; }
-    [JsonIgnore] public string? CurrentCertificate { get; set; }
+    /// <summary>Letzter Status (Test/Lauf) – nur Anzeige.</summary>
+    public string? LastStatus { get; set; }
+    public string? CurrentCertificate { get; set; }
 }
 
 public sealed class ExchangeSettings
@@ -118,8 +117,7 @@ public sealed class AutoModeSettings
     /// <summary>Uhrzeit HH:mm (lokal).</summary>
     public string Time { get; set; } = "03:30";
     public bool DryRun { get; set; }
-    public DateTime? LastRun { get; set; }
-    public string? LastResult { get; set; }
+    // Letzter Lauf/Ergebnis stehen in state.json (schreibt nur der Dienst).
 }
 
 public sealed class LoggingSettings

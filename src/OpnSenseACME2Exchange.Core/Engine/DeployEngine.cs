@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json.Serialization;
 using OpnSenseACME2Exchange.Core.Certificates;
 using OpnSenseACME2Exchange.Core.Config;
 using OpnSenseACME2Exchange.Core.Exchange;
@@ -25,7 +26,10 @@ public sealed class RunResult
     public bool DryRun { get; init; }
     public CertificateInfo? Certificate { get; set; }
     public string? CertificateSource { get; set; }
+    // Populate: damit die Listen auch beim Deserialisieren (Pipe/state.json) gefüllt werden
+    [JsonObjectCreationHandling(JsonObjectCreationHandling.Populate)]
     public List<ServerRunResult> Servers { get; } = new();
+    [JsonObjectCreationHandling(JsonObjectCreationHandling.Populate)]
     public List<string> Warnings { get; } = new();
     public string? FatalError { get; set; }
 

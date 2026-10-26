@@ -163,9 +163,12 @@ public sealed class FakeExchange : IExchangeOperations, ITlsProbe
 
     public ConnectionTestResult TestConnection(ExchangeServerEntry server, string externalHostname, CancellationToken ct) => new();
 
+    public Action? BeforeGet { get; set; }
+
     public IReadOnlyList<ExchangeCertInfo> GetCertificates(ExchangeServerEntry server, CancellationToken ct)
     {
-        Calls.Add($"Get {server.Fqdn}");
+        BeforeGet?.Invoke();
+        lock (Calls) Calls.Add($"Get {server.Fqdn}");
         return Store(server).ToList();
     }
 

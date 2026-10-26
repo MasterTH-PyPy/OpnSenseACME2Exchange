@@ -431,6 +431,8 @@ Test("Config: Roundtrip mit Schutz", () =>
 });
 
 // ───────────────────────── Ausführen ─────────────────────────
+ServiceTests.Register(Test, Scenario);
+
 int failed = 0;
 foreach (var (name, body) in tests)
 {

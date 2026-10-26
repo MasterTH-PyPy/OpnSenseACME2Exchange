@@ -1,97 +1,135 @@
+using System.Text.Json;
+using OpnSenseACME2Exchange.Client;
 using OpnSenseACME2Exchange.Core.Config;
+using OpnSenseACME2Exchange.Core.Ipc;
 using OpnSenseACME2Exchange.Core.Logging;
 using OpnSenseACME2Exchange.Core.Scheduling;
 using OpnSenseACME2Exchange.Infrastructure;
 
 namespace OpnSenseACME2Exchange.UI;
 
-/// <summary>Hauptfenster: Grundgerüst, Konfiguration ↔ Oberfläche, Busy-Handling, Infobereich, Auto-Modus.</summary>
+/// <summary>
+/// Hauptfenster = reine Bedienoberfläche. Alles Fachliche (SSH, AD, Exchange, Läufe, Zeitplan) macht der Dienst;
+/// die GUI schickt ihm Konfiguration und Befehle über die Named Pipe und zeigt Status/Logs live an.
+/// </summary>
 public sealed partial class MainForm : Form
 {
-    private readonly AppServices _services;
-    private AppConfig _cfg;
-    private readonly bool _configLoadFailed;
-    private CancellationTokenSource? _cts;
+    private readonly ServiceClient _client = new();
+    private AppConfig _cfg = new();
+    private ConfigDto? _dto;
+    private bool _connected;
     private bool _busy;
-    private volatile bool _unattended;
-    private volatile bool _learned;
-    private bool _exitRequested;
-    private bool _trayHintShown;
     private bool _binding;
+    private CancellationTokenSource? _cts;
+    private string _boundJson = "";
+    private int _reconnectTick;
+    private GuiSettings _gui = GuiSettings.Load();
 
-    public MainForm(AppServices services)
+    public MainForm()
     {
-        _services = services;
-        try
-        {
-            _cfg = services.Store.Load();
-        }
-        catch (Exception ex)
-        {
-            _cfg = new AppConfig();
-            _configLoadFailed = true;
-            MessageBox.Show(
-                "Die Konfiguration konnte nicht gelesen werden:\n\n" + ex.Message +
-                "\n\nTypische Ursache: config.dat/key.bin stammen von einem anderen Rechner.\n" +
-                "Es wird mit einer leeren Konfiguration gestartet. Beim Speichern wird die alte Datei vorher gesichert.",
-                "Konfiguration", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
-        services.ApplyLogging(_cfg);
-
         BuildUi();
-        BindConfig();
-
-        Log.EntryWritten += OnLogEntry;
+        SetConnectedUi(false);
         Load += OnFormLoad;
-        Resize += OnFormResize;
         FormClosing += OnFormClosing;
-
-        Log.Info($"OpnSenseACME2Exchange {Program.Version} gestartet ({Environment.UserDomainName}\\{Environment.UserName}).");
+        _tabs.SelectedIndexChanged += async (_, _) =>
+        {
+            if (_tabs.SelectedTab == _pageLog && _connected) await RefreshLogFilesAsync();
+            if (_tabs.SelectedTab == _pageService) RefreshInstalledInfo();
+        };
     }
 
-    private void OnFormLoad(object? sender, EventArgs e)
+    private async void OnFormLoad(object? sender, EventArgs e)
     {
         TrySetSplitter(_splitHaproxy, 320);
         TrySetSplitter(_splitLog, 270);
-        RefreshLogFiles();
-        _schedulerTimer.Start();
-        _logTimer.Start();
-        UpdateNextRunLabel();
+        _txtServiceHost.Text = _gui.ServiceHost ?? "";
+        _txtSvcAccount.Text = _gui.ServiceAccount ?? "";
+        _txtSvcAccess.Text = _gui.ExtraAccess ?? "";
+        RefreshInstalledInfo();
 
-        if (_cfg.OpnSense.Nodes.Count == 0)
-        {
-            _tabs.SelectedTab = _pageOpn;
-            _status.Text = "Ersteinrichtung: OPNsense-Knoten eintragen → HAProxy einlesen → Exchange-Server ermitteln → Dry-Run.";
-        }
-        else _tabs.SelectedTab = _pageRun;
+        await ConnectAsync(showErrors: false);
+        _statusTimer.Start();
+        _logTimer.Start();
     }
 
     private static void TrySetSplitter(SplitContainer split, int distance)
     {
+        try { if (split.Width > distance + split.Panel2MinSize) split.SplitterDistance = distance; }
+        catch (InvalidOperationException) { /* Fenster zu klein */ }
+    }
+
+    // ───────────────────────── Verbindung ─────────────────────────
+
+    private async Task ConnectAsync(bool showErrors)
+    {
+        _client.Server = string.IsNullOrWhiteSpace(_txtServiceHost.Text) ? "." : _txtServiceHost.Text.Trim();
         try
         {
-            if (split.Width > distance + split.Panel2MinSize) split.SplitterDistance = distance;
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var dto = await _client.CallAsync<ConfigDto>(Commands.GetConfig, null, cts.Token)
+                      ?? throw new ServiceCallException("Leere Antwort vom Dienst.");
+            ApplyConfigDto(dto);
+            _connected = true;
+            SetConnectedUi(true);
+            _lblConn.Text = $"Verbunden mit {dto.MachineName} – Dienstkonto {dto.ServiceAccount} – Daten {dto.DataDirectory}";
+            _lblConn.ForeColor = SystemColors.ControlText;
+            _statusConn.Text = $"Dienst: {dto.MachineName} ({dto.ServiceAccount})";
+            Log.Info($"Verbunden mit Dienst auf {_client.Display}.");
+
+            if (_cfg.OpnSense.Nodes.Count == 0)
+            {
+                _tabs.SelectedTab = _pageOpn;
+                _status.Text = "Ersteinrichtung: OPNsense-Knoten eintragen → HAProxy einlesen → Exchange-Server ermitteln → Dry-Run.";
+            }
+            await PollStatusAsync();
         }
-        catch (InvalidOperationException) { /* Fenster zu klein – Standard behalten */ }
+        catch (Exception ex)
+        {
+            _connected = false;
+            SetConnectedUi(false);
+            _lblConn.Text = ex.Message;
+            _lblConn.ForeColor = Color.Firebrick;
+            _statusConn.Text = "Dienst: nicht verbunden";
+            _status.Text = "Kein Dienst erreichbar – im Reiter 'Dienst' installieren oder verbinden.";
+            _tabs.SelectedTab = _pageService;
+            if (showErrors) MessageBox.Show(this, ex.Message, "Verbindung zum Dienst", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private void SetConnectedUi(bool connected)
+    {
+        foreach (var p in new[] { _pageOpn, _pageHaproxy, _pageExchange, _pageRun, _pageLog })
+            p.Enabled = connected && !_busy;
+        _btnSave.Enabled = connected && !_busy;
+    }
+
+    private void ApplyConfigDto(ConfigDto dto)
+    {
+        _dto = dto;
+        _cfg = dto.Config;
+        BindConfig();
+    }
+
+    private async Task ReloadConfigAsync()
+    {
+        if (!_connected) return;
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var dto = await _client.CallAsync<ConfigDto>(Commands.GetConfig, null, cts.Token);
+            if (dto != null) ApplyConfigDto(dto);
+        }
+        catch (Exception ex) { Log.Warn("Konfiguration nicht neu ladbar: " + ex.Message); }
     }
 
     // ───────────────────────── Konfiguration ↔ Oberfläche ─────────────────────────
-
-    private string? RevealSafe(string? value)
-    {
-        try { return _services.Store.Reveal(value); }
-        catch (Exception ex)
-        {
-            Log.Warn("Gespeichertes Passwort nicht entschlüsselbar: " + Log.Describe(ex));
-            return null;
-        }
-    }
 
     private void BindConfig()
     {
         _binding = true;
         try { BindConfigCore(); }
         finally { _binding = false; }
+        _boundJson = JsonSerializer.Serialize(CollectRequest().Config, ConfigStore.JsonOptions);
     }
 
     private void BindConfigCore()
@@ -100,15 +138,15 @@ public sealed partial class MainForm : Form
         _gridNodes.Rows.Clear();
         foreach (var n in o.Nodes)
         {
-            var i = _gridNodes.Rows.Add(n.Name, n.Host, n.Port.ToString(), n.HostKeyFingerprint ?? "", "");
+            var i = _gridNodes.Rows.Add(n.Name, n.Host, n.Port.ToString(), n.HostKeyFingerprint ?? "(noch nicht bestätigt)", "");
             _gridNodes.Rows[i].Tag = n;
         }
         _txtSshUser.Text = o.Username;
         _rbSshPassword.Checked = o.AuthMode == SshAuthMode.Password;
         _rbSshKey.Checked = o.AuthMode == SshAuthMode.PrivateKey;
-        _txtSshPassword.Text = RevealSafe(o.PasswordProtected) ?? "";
+        SetSecretBox(_txtSshPassword, _dto?.HasSshPassword == true);
         _txtKeyPath.Text = o.PrivateKeyPath ?? "";
-        _txtKeyPassphrase.Text = RevealSafe(o.PrivateKeyPassphraseProtected) ?? "";
+        SetSecretBox(_txtKeyPassphrase, _dto?.HasKeyPassphrase == true);
         _chkSudo.Checked = o.UseSudo;
         _chkPreferMaster.Checked = o.PreferCarpMaster;
         _txtHaproxyPath.Text = o.HaproxyConfigPath;
@@ -118,12 +156,20 @@ public sealed partial class MainForm : Form
         _cmbHostname.Text = _cfg.Selection.ExchangeHostname;
         _txtAdditionalNames.Text = string.Join(", ", _cfg.Selection.AdditionalRequiredNames);
 
-        BindServersGrid();
+        _gridServers.Rows.Clear();
+        foreach (var s in _cfg.Exchange.Servers)
+        {
+            var i = _gridServers.Rows.Add(s.Enabled, s.Name, s.Fqdn, s.Version ?? "", s.Dag ?? "", s.Site ?? "",
+                s.PowerShellUri ?? "", s.CurrentCertificate ?? "", s.LastStatus ?? "");
+            _gridServers.Rows[i].Tag = s;
+            ColorStatusRow(_gridServers.Rows[i], s.LastStatus);
+        }
+
         var e = _cfg.Exchange;
         _rbExCurrentUser.Checked = e.UseCurrentUser;
         _rbExOtherUser.Checked = !e.UseCurrentUser;
         _txtExUser.Text = e.Username ?? "";
-        _txtExPassword.Text = RevealSafe(e.PasswordProtected) ?? "";
+        SetSecretBox(_txtExPassword, _dto?.HasExchangePassword == true);
         _cmbExAuth.SelectedItem = _cmbExAuth.Items.Contains(e.Authentication) ? e.Authentication : "Kerberos";
         _chkIis.Checked = e.ServiceIis;
         _chkSmtp.Checked = e.ServiceSmtp;
@@ -139,99 +185,93 @@ public sealed partial class MainForm : Form
         _chkAuto.Checked = a.Enabled;
         _dtpAutoTime.Value = DateTime.Today + (DailySchedule.TryParseTime(a.Time, out var t) ? t.ToTimeSpan() : new TimeSpan(3, 30, 0));
         _chkAutoDryRun.Checked = a.DryRun;
-        UpdateLastRunLabel();
 
         _txtLogDir.Text = _cfg.Logging.Directory ?? "";
         _numRetain.Value = Math.Clamp(_cfg.Logging.RetainDays, 1, 3650);
         _chkDebug.Checked = _cfg.Logging.Debug;
     }
 
-    private void BindServersGrid()
+    private static void SetSecretBox(TextBox box, bool stored)
     {
-        _gridServers.Rows.Clear();
-        foreach (var s in _cfg.Exchange.Servers)
-        {
-            var i = _gridServers.Rows.Add(s.Enabled, s.Name, s.Fqdn, s.Version ?? "", s.Dag ?? "", s.Site ?? "",
-                s.PowerShellUri ?? "", s.CurrentCertificate ?? "", s.LastStatus ?? "");
-            _gridServers.Rows[i].Tag = s;
-            ColorStatusRow(_gridServers.Rows[i], s.LastStatus);
-        }
+        box.Text = "";
+        box.PlaceholderText = stored ? "gespeichert – nur zum Ändern neu eingeben" : "";
     }
 
     private static void ColorStatusRow(DataGridViewRow row, string? status)
     {
-        var c = status switch
+        row.DefaultCellStyle.BackColor = status switch
         {
             null or "" => SystemColors.Window,
-            _ when status.StartsWith("OK", StringComparison.Ordinal) => System.Drawing.Color.FromArgb(220, 245, 220),
-            _ when status.StartsWith("Skipped", StringComparison.Ordinal) => SystemColors.Window,
+            _ when status.StartsWith("OK", StringComparison.Ordinal) => Color.FromArgb(220, 245, 220),
             _ when status.StartsWith("FEHLER", StringComparison.Ordinal) || status.StartsWith("Failed", StringComparison.Ordinal)
-                => System.Drawing.Color.FromArgb(250, 215, 215),
-            _ when status.StartsWith("Warning", StringComparison.Ordinal) => System.Drawing.Color.FromArgb(255, 243, 205),
+                => Color.FromArgb(250, 215, 215),
+            _ when status.StartsWith("Warning", StringComparison.Ordinal) => Color.FromArgb(255, 243, 205),
             _ => SystemColors.Window
         };
-        row.DefaultCellStyle.BackColor = c;
     }
 
-    /// <summary>Überträgt alle Eingaben in die Konfiguration (ohne zu speichern).</summary>
-    private void CollectConfig()
+    /// <summary>Baut aus den Eingaben die Speicher-Anfrage (Passwörter nur, wenn neu eingegeben).</summary>
+    private SaveConfigRequest CollectRequest()
     {
         _gridNodes.EndEdit();
         _gridServers.EndEdit();
+        var cfg = JsonSerializer.Deserialize<AppConfig>(JsonSerializer.Serialize(_cfg, ConfigStore.JsonOptions), ConfigStore.JsonOptions)!;
 
-        var o = _cfg.OpnSense;
-        var nodes = new List<OpnSenseNode>();
+        var o = cfg.OpnSense;
+        o.Nodes = new List<OpnSenseNode>();
         foreach (DataGridViewRow row in _gridNodes.Rows)
         {
             if (row.IsNewRow) continue;
             var host = Cell(row, "Host");
             if (host.Length == 0) continue;
-            var node = row.Tag as OpnSenseNode ?? new OpnSenseNode();
-            if (!string.Equals(node.Host, host, StringComparison.OrdinalIgnoreCase)) node.HostKeyFingerprint = null; // anderer Host = anderer Key
-            node.Host = host;
-            node.Name = Cell(row, "Name");
-            node.Port = int.TryParse(Cell(row, "Port"), out var p) && p is > 0 and < 65536 ? p : 22;
-            row.Tag = node;
-            nodes.Add(node);
+            o.Nodes.Add(new OpnSenseNode
+            {
+                Host = host,
+                Name = Cell(row, "Name"),
+                Port = int.TryParse(Cell(row, "Port"), out var p) && p is > 0 and < 65536 ? p : 22,
+                HostKeyFingerprint = (row.Tag as OpnSenseNode)?.Host.Equals(host, StringComparison.OrdinalIgnoreCase) == true
+                    ? ((OpnSenseNode)row.Tag!).HostKeyFingerprint : null
+            });
         }
-        o.Nodes = nodes;
         o.Username = _txtSshUser.Text.Trim();
         o.AuthMode = _rbSshKey.Checked ? SshAuthMode.PrivateKey : SshAuthMode.Password;
-        o.PasswordProtected = _services.Store.Hide(_txtSshPassword.Text);
         o.PrivateKeyPath = string.IsNullOrWhiteSpace(_txtKeyPath.Text) ? null : _txtKeyPath.Text.Trim();
-        o.PrivateKeyPassphraseProtected = _services.Store.Hide(_txtKeyPassphrase.Text);
         o.UseSudo = _chkSudo.Checked;
         o.PreferCarpMaster = _chkPreferMaster.Checked;
         o.HaproxyConfigPath = string.IsNullOrWhiteSpace(_txtHaproxyPath.Text) ? "/usr/local/etc/haproxy.conf" : _txtHaproxyPath.Text.Trim();
         o.TimeoutSeconds = (int)_numSshTimeout.Value;
 
-        if (_lstSections.SelectedItem is Core.Haproxy.HaproxySection sec) _cfg.Selection.SectionKey = sec.Key;
-        _cfg.Selection.ExchangeHostname = _cmbHostname.Text.Trim().ToLowerInvariant();
-        _cfg.Selection.AdditionalRequiredNames = _txtAdditionalNames.Text
+        if (_lstSections.SelectedItem is HaproxySectionDto sec) cfg.Selection.SectionKey = sec.Key;
+        cfg.Selection.ExchangeHostname = _cmbHostname.Text.Trim().ToLowerInvariant();
+        cfg.Selection.AdditionalRequiredNames = _txtAdditionalNames.Text
             .Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(n => n.ToLowerInvariant()).Distinct().ToList();
 
-        var servers = new List<ExchangeServerEntry>();
+        cfg.Exchange.Servers = new List<ExchangeServerEntry>();
         foreach (DataGridViewRow row in _gridServers.Rows)
         {
             if (row.IsNewRow) continue;
             var fqdn = Cell(row, "Fqdn");
             var name = Cell(row, "Name");
             if (fqdn.Length == 0 && name.Length == 0) continue;
-            var s = row.Tag as ExchangeServerEntry ?? new ExchangeServerEntry();
-            if (!string.Equals(s.Fqdn, fqdn, StringComparison.OrdinalIgnoreCase)) s.PowerShellUri = null;
-            s.Fqdn = fqdn.Length > 0 ? fqdn : name;
+            var old = row.Tag as ExchangeServerEntry;
+            var s = new ExchangeServerEntry
+            {
+                Fqdn = fqdn.Length > 0 ? fqdn : name,
+                Enabled = row.Cells["Enabled"].Value is true || (old == null && row.Cells["Enabled"].Value == null)
+            };
             s.Name = name.Length > 0 ? name : s.Fqdn.Split('.')[0];
-            s.Enabled = row.Cells["Enabled"].Value is true;
-            row.Tag = s;
-            servers.Add(s);
+            if (old != null && old.Fqdn.Equals(s.Fqdn, StringComparison.OrdinalIgnoreCase))
+            {
+                s.Version = old.Version; s.Dag = old.Dag; s.Site = old.Site;
+                s.PowerShellUri = old.PowerShellUri; s.CurrentCertificate = old.CurrentCertificate; s.LastStatus = old.LastStatus;
+            }
+            cfg.Exchange.Servers.Add(s);
         }
-        _cfg.Exchange.Servers = servers;
 
-        var e = _cfg.Exchange;
+        var e = cfg.Exchange;
         e.UseCurrentUser = _rbExCurrentUser.Checked;
         e.Username = string.IsNullOrWhiteSpace(_txtExUser.Text) ? null : _txtExUser.Text.Trim();
-        e.PasswordProtected = _services.Store.Hide(_txtExPassword.Text);
         e.Authentication = _cmbExAuth.SelectedItem as string ?? "Kerberos";
         e.ServiceIis = _chkIis.Checked;
         e.ServiceSmtp = _chkSmtp.Checked;
@@ -242,52 +282,52 @@ public sealed partial class MainForm : Form
         e.IisResetOnMismatch = _chkIisReset.Checked;
         e.RemoveReplacedCertificate = _chkRemoveOld.Checked;
 
-        _cfg.Auto.Enabled = _chkAuto.Checked;
-        _cfg.Auto.Time = _dtpAutoTime.Value.ToString("HH:mm");
-        _cfg.Auto.DryRun = _chkAutoDryRun.Checked;
+        cfg.Auto.Enabled = _chkAuto.Checked;
+        cfg.Auto.Time = _dtpAutoTime.Value.ToString("HH:mm");
+        cfg.Auto.DryRun = _chkAutoDryRun.Checked;
 
-        var newDir = string.IsNullOrWhiteSpace(_txtLogDir.Text) ? null : _txtLogDir.Text.Trim();
-        var logChanged = newDir != _cfg.Logging.Directory || (int)_numRetain.Value != _cfg.Logging.RetainDays || _chkDebug.Checked != _cfg.Logging.Debug;
-        _cfg.Logging.Directory = newDir;
-        _cfg.Logging.RetainDays = (int)_numRetain.Value;
-        _cfg.Logging.Debug = _chkDebug.Checked;
-        if (logChanged)
+        cfg.Logging.Directory = string.IsNullOrWhiteSpace(_txtLogDir.Text) ? null : _txtLogDir.Text.Trim();
+        cfg.Logging.RetainDays = (int)_numRetain.Value;
+        cfg.Logging.Debug = _chkDebug.Checked;
+
+        return new SaveConfigRequest
         {
-            _services.ApplyLogging(_cfg);
-            RefreshLogFiles();
-        }
+            Config = cfg,
+            SshPassword = NullIfEmpty(_txtSshPassword.Text),
+            KeyPassphrase = NullIfEmpty(_txtKeyPassphrase.Text),
+            ExchangePassword = NullIfEmpty(_txtExPassword.Text)
+        };
     }
+
+    private static string? NullIfEmpty(string s) => string.IsNullOrEmpty(s) ? null : s;
 
     private static string Cell(DataGridViewRow row, string column) => (row.Cells[column].Value?.ToString() ?? "").Trim();
 
-    private bool SaveConfig(bool showMessage)
+    private bool HasUnsavedChanges()
     {
-        try
-        {
-            CollectConfig();
-            if (_configLoadFailed && File.Exists(_services.Store.FilePath))
-            {
-                var backup = _services.Store.FilePath + $".bak-{DateTime.Now:yyyyMMdd-HHmmss}";
-                if (!File.Exists(backup)) File.Copy(_services.Store.FilePath, backup);
-            }
-            _services.Store.Save(_cfg);
-            _status.Text = $"Konfiguration gespeichert ({DateTime.Now:HH:mm:ss}).";
-            if (showMessage) Log.Info("Konfiguration gespeichert.");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Log.Error("Konfiguration konnte nicht gespeichert werden", ex);
-            if (showMessage) MessageBox.Show(this, ex.Message, "Speichern fehlgeschlagen", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return false;
-        }
+        if (!_connected) return false;
+        var req = CollectRequest();
+        return req.SshPassword != null || req.KeyPassphrase != null || req.ExchangePassword != null
+               || JsonSerializer.Serialize(req.Config, ConfigStore.JsonOptions) != _boundJson;
     }
 
-    /// <summary>Speichert still (z.B. gelernte Hostkeys/URIs, Auto-Lauf-Status).</summary>
-    private void SaveQuiet()
+    /// <summary>Konfiguration an den Dienst senden (Aufrufer kümmert sich um Busy-Status).</summary>
+    private async Task SaveCoreAsync(CancellationToken ct)
     {
-        try { _services.Store.Save(_cfg); }
-        catch (Exception ex) { Log.Warn("Konfiguration konnte nicht gespeichert werden: " + Log.Describe(ex)); }
+        var dto = await _client.CallAsync<ConfigDto>(Commands.SaveConfig, CollectRequest(), ct)
+                  ?? throw new ServiceCallException("Dienst lieferte keine Konfiguration zurück.");
+        ApplyConfigDto(dto);
+    }
+
+    private async Task<bool> SaveConfigAsync(bool showMessage)
+    {
+        var ok = await RunBusyAsync("Speichere Konfiguration im Dienst", async ct => { await SaveCoreAsync(ct); return true; }, reloadAfter: false);
+        if (ok)
+        {
+            _status.Text = $"Konfiguration im Dienst gespeichert ({DateTime.Now:HH:mm:ss}).";
+            if (showMessage) Log.Info("Konfiguration gespeichert.");
+        }
+        return ok;
     }
 
     private void UpdateSshAuthUi()
@@ -307,7 +347,7 @@ public sealed partial class MainForm : Form
 
     // ───────────────────────── Busy-Handling ─────────────────────────
 
-    private async Task<T?> RunBusyAsync<T>(string status, Func<CancellationToken, T> work, bool showErrors = true)
+    private async Task<T?> RunBusyAsync<T>(string status, Func<CancellationToken, Task<T>> work, bool reloadAfter = true)
     {
         if (_busy)
         {
@@ -315,13 +355,11 @@ public sealed partial class MainForm : Form
             return default;
         }
         _busy = true;
-        _learned = false;
         _cts = new CancellationTokenSource();
         SetBusyUi(true, status);
         try
         {
-            var token = _cts.Token;
-            return await Task.Run(() => work(token));
+            return await work(_cts.Token);
         }
         catch (OperationCanceledException)
         {
@@ -330,151 +368,103 @@ public sealed partial class MainForm : Form
         }
         catch (Exception ex)
         {
-            Log.Error($"{status} fehlgeschlagen", ex);
+            Log.Warn($"{status} fehlgeschlagen: {ex.Message}");
             _status.Text = "Fehler: " + ex.Message;
-            if (showErrors && !_unattended)
-                MessageBox.Show(this, ex.Message, status, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            if (ex is ServiceCallException || ex is IOException || ex is TimeoutException)
+                MessageBox.Show(this, ex.Message, status, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            else
+                MessageBox.Show(this, ex.ToString(), status, MessageBoxButtons.OK, MessageBoxIcon.Error);
             return default;
         }
         finally
         {
-            SetBusyUi(false, null);
             _cts.Dispose();
             _cts = null;
             _busy = false;
-            if (_learned) { SaveQuiet(); RefreshNodeHostKeys(); }
+            SetBusyUi(false, null);
+            if (reloadAfter) await ReloadConfigAsync();
         }
     }
 
     private void SetBusyUi(bool busy, string? status)
     {
-        _pageOpn.Enabled = _pageHaproxy.Enabled = _pageExchange.Enabled = !busy;
-        _btnDryRun.Enabled = _btnRunNow.Enabled = _btnSave.Enabled = !busy;
+        SetConnectedUi(_connected);
+        _btnDryRun.Enabled = _btnRunNow.Enabled = !busy && _connected;
         _btnCancel.Enabled = busy;
+        foreach (var b in new[] { _btnSvcInstall, _btnSvcUpdate, _btnSvcStart, _btnSvcStop, _btnSvcUninstall, _btnSvcAccess, _btnConnect })
+            b.Enabled = !busy;
         _progress.Visible = busy;
         _progress.MarqueeAnimationSpeed = busy ? 30 : 0;
         if (status != null) _status.Text = status + " …";
-        UseWaitCursor = false;
     }
 
-    private void MarkLearned() => _learned = true;
-
-    /// <summary>Hostkey-Bestätigung (kommt aus dem Hintergrund-Thread).</summary>
-    private bool ConfirmHostKey(OpnSenseNode node, string fingerprint)
+    private async Task CancelAsync()
     {
-        if (_unattended) return false;
-        return (bool)Invoke(new Func<bool>(() =>
-            MessageBox.Show(this,
-                $"Unbekannter SSH-Hostkey für {node}:\n\n{fingerprint}\n\n" +
-                "Bitte mit dem Fingerprint auf der OPNsense vergleichen (Konsole: ssh-keygen -lf /conf/sshd/ssh_host_ed25519_key.pub).\n\n" +
-                "Diesem Schlüssel dauerhaft vertrauen?",
-                "SSH-Hostkey bestätigen", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) == DialogResult.Yes));
-    }
-
-    private void RefreshNodeHostKeys()
-    {
-        foreach (DataGridViewRow row in _gridNodes.Rows)
-            if (row.Tag is OpnSenseNode n) row.Cells["HostKey"].Value = n.HostKeyFingerprint ?? "";
-    }
-
-    // ───────────────────────── Auto-Modus ─────────────────────────
-
-    private async Task SchedulerTickAsync()
-    {
-        UpdateNextRunLabel();
-        if (!_cfg.Auto.Enabled || _busy) return;
-        if (!DailySchedule.TryParseTime(_cfg.Auto.Time, out var t)) return;
-        if (!DailySchedule.IsDue(DateTime.Now, t, _cfg.Auto.LastRun)) return;
-
-        Log.Info($"Auto-Modus: geplanter Lauf ({_cfg.Auto.Time}{(_cfg.Auto.DryRun ? ", Dry-Run" : "")}).");
-        await StartRunAsync(_cfg.Auto.DryRun, unattended: true);
-    }
-
-    private void OnAutoSettingsChanged()
-    {
-        if (_binding) return;
-        var wasEnabled = _cfg.Auto.Enabled;
-        _cfg.Auto.Enabled = _chkAuto.Checked;
-        _cfg.Auto.Time = _dtpAutoTime.Value.ToString("HH:mm");
-        _cfg.Auto.DryRun = _chkAutoDryRun.Checked;
-        if (wasEnabled != _cfg.Auto.Enabled)
+        try
         {
-            Log.Info(_cfg.Auto.Enabled ? $"Auto-Modus aktiviert ({_cfg.Auto.Time})." : "Auto-Modus deaktiviert.");
-            SaveQuiet();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var resp = await _client.SendAsync(Commands.Cancel, null, cts.Token);
+            _status.Text = "Abbruch angefordert …";
         }
-        UpdateNextRunLabel();
+        catch (Exception ex) { _status.Text = "Abbruch nicht möglich: " + ex.Message; }
     }
 
-    private void UpdateNextRunLabel()
-    {
-        if (_cfg.Auto.Enabled && DailySchedule.TryParseTime(_cfg.Auto.Time, out var t))
-        {
-            var next = DailySchedule.NextRun(DateTime.Now, t, _cfg.Auto.LastRun);
-            var text = next <= DateTime.Now ? "jetzt (nachholen)" : next.ToString("dddd, dd.MM.yyyy HH:mm");
-            _lblNextRun.Text = text + (_cfg.Auto.DryRun ? "  (Dry-Run)" : "");
-            _statusNext.Text = "Auto: " + text;
-        }
-        else
-        {
-            _lblNextRun.Text = "– (Auto-Modus aus)";
-            _statusNext.Text = "Auto-Modus aus";
-        }
-    }
-
-    private void UpdateLastRunLabel() =>
-        _lblLastRun.Text = _cfg.Auto.LastRun.HasValue
-            ? $"{_cfg.Auto.LastRun:dd.MM.yyyy HH:mm} – {_cfg.Auto.LastResult}"
-            : "–";
-
-    // ───────────────────────── Fenster / Infobereich ─────────────────────────
-
-    private void OnFormResize(object? sender, EventArgs e)
-    {
-        if (WindowState != FormWindowState.Minimized || !_cfg.Auto.Enabled) return;
-        Hide();
-        if (!_trayHintShown)
-        {
-            _tray.ShowBalloonTip(4000, "OpnSenseACME2Exchange", "Läuft im Infobereich weiter – der Auto-Modus bleibt aktiv.", ToolTipIcon.Info);
-            _trayHintShown = true;
-        }
-    }
-
-    private void RestoreFromTray()
-    {
-        Show();
-        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
-        Activate();
-    }
+    // ───────────────────────── Fenster ─────────────────────────
 
     private void OnFormClosing(object? sender, FormClosingEventArgs e)
     {
-        if (e.CloseReason == CloseReason.UserClosing && !_exitRequested && _cfg.Auto.Enabled)
+        if (e.CloseReason == CloseReason.UserClosing && !_busy && HasUnsavedChanges())
         {
-            var answer = MessageBox.Show(this,
-                "Der Auto-Modus ist aktiv. Nach dem Beenden findet kein automatischer Austausch mehr statt.\n\n" +
-                "Ja = in den Infobereich minimieren\nNein = wirklich beenden",
+            var answer = MessageBox.Show(this, "Es gibt nicht gespeicherte Änderungen. Vor dem Beenden im Dienst speichern?",
                 "Beenden", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
-            if (answer == DialogResult.Yes) { e.Cancel = true; WindowState = FormWindowState.Minimized; return; }
             if (answer == DialogResult.Cancel) { e.Cancel = true; return; }
-        }
-        if (_busy)
-        {
-            if (MessageBox.Show(this, "Es läuft noch eine Aktion. Trotzdem beenden?", "Beenden",
-                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            if (answer == DialogResult.Yes)
             {
                 e.Cancel = true;
-                _exitRequested = false;
+                BeginInvoke(new Action(async () =>
+                {
+                    if (await SaveConfigAsync(showMessage: false)) { _boundJson = ""; ForceClose(); }
+                }));
                 return;
             }
-            _cts?.Cancel();
         }
-
-        if (!_configLoadFailed) { CollectConfig(); SaveQuiet(); }
-        Log.EntryWritten -= OnLogEntry;
-        _schedulerTimer.Stop();
+        _gui.ServiceHost = _txtServiceHost.Text.Trim();
+        _gui.ServiceAccount = _txtSvcAccount.Text.Trim();
+        _gui.ExtraAccess = _txtSvcAccess.Text.Trim();
+        _gui.Save();
+        _statusTimer.Stop();
         _logTimer.Stop();
-        _tray.Visible = false;
-        _tray.Dispose();
-        Log.Info("Programm beendet.");
+    }
+
+    private void ForceClose()
+    {
+        _connected = false; // keine Rückfrage mehr
+        Close();
+    }
+}
+
+/// <summary>Persönliche GUI-Einstellungen (pro Benutzer, ohne Geheimnisse).</summary>
+public sealed class GuiSettings
+{
+    public string? ServiceHost { get; set; }
+    public string? ServiceAccount { get; set; }
+    public string? ExtraAccess { get; set; }
+
+    private static string FilePath => Path.Combine(Path.GetDirectoryName(AppPaths.GuiLogDirectory)!, "gui.json");
+
+    public static GuiSettings Load()
+    {
+        try { return File.Exists(FilePath) ? JsonSerializer.Deserialize<GuiSettings>(File.ReadAllText(FilePath)) ?? new() : new(); }
+        catch { return new(); }
+    }
+
+    public void Save()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
+            File.WriteAllText(FilePath, JsonSerializer.Serialize(this));
+        }
+        catch { /* nicht kritisch */ }
     }
 }

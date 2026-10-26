@@ -9,12 +9,10 @@ namespace OpnSenseACME2Exchange.Infrastructure;
 /// <summary>Baut die Komponenten aus der Konfiguration (Geheimnisse werden erst hier entschlüsselt).</summary>
 public sealed class AppServices
 {
-    public static string BaseDirectory => AppContext.BaseDirectory;
-
     public AppServices()
     {
-        Protector = new DpapiAesSecretProtector(Path.Combine(BaseDirectory, "key.bin"));
-        Store = new ConfigStore(Path.Combine(BaseDirectory, "config.dat"), Protector);
+        Protector = new DpapiAesSecretProtector(AppPaths.KeyFile);
+        Store = new ConfigStore(AppPaths.ConfigFile, Protector);
     }
 
     public DpapiAesSecretProtector Protector { get; }
@@ -49,7 +47,7 @@ public sealed class AppServices
         new(cfg, CreateCertificateSource(cfg, confirmHostKey, onLearned), CreateExchange(cfg, onLearned), new TlsProbe());
 
     public void ApplyLogging(AppConfig cfg) =>
-        Log.Configure(cfg.Logging.Directory, cfg.Logging.RetainDays, cfg.Logging.Debug);
+        Log.Configure(cfg.Logging.Directory, cfg.Logging.RetainDays, cfg.Logging.Debug, AppPaths.LogDirectory);
 }
 
 /// <summary>Prozessübergreifende Sperre, damit GUI und geplante Aufgabe nie gleichzeitig tauschen.</summary>

@@ -40,12 +40,12 @@ public static class Log
         get { lock (Sync) return _directory; }
     }
 
-    public static void Configure(string? directory, int retainDays, bool debug)
+    public static void Configure(string? directory, int retainDays, bool debug, string? defaultDirectory = null)
     {
         lock (Sync)
         {
             _directory = string.IsNullOrWhiteSpace(directory)
-                ? Path.Combine(AppContext.BaseDirectory, "Logs")
+                ? defaultDirectory ?? Path.Combine(AppContext.BaseDirectory, "Logs")
                 : Environment.ExpandEnvironmentVariables(directory.Trim());
             _retainDays = Math.Clamp(retainDays, 1, 3650);
             _lastCleanup = DateTime.MinValue;
