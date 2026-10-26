@@ -208,6 +208,27 @@ public sealed class FakeExchange : IExchangeOperations, ITlsProbe
 
     public void IisReset(ExchangeServerEntry server, CancellationToken ct) => Calls.Add($"IisReset {server.Fqdn}");
 
+    public Dictionary<string, List<ExchangeUrlEntry>> Urls { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<string> UrlsBroken { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public int UrlCalls;
+
+    public static List<ExchangeUrlEntry> StandardUrls(string server, string host = "mail.example.de") => new()
+    {
+        new("OWA", "Intern", $@"{server}\owa (Default Web Site)", $"https://{host}/owa"),
+        new("OWA", "Extern", $@"{server}\owa (Default Web Site)", $"https://{host}/owa"),
+        new("EWS", "Intern", $@"{server}\EWS (Default Web Site)", $"https://{host}/EWS/Exchange.asmx"),
+        new("EWS", "Extern", $@"{server}\EWS (Default Web Site)", null),
+        new("OutlookAnywhere", "Intern", $@"{server}\Rpc (Default Web Site)", host),
+        new("Autodiscover", "Intern", server, "https://autodiscover.example.de/Autodiscover/Autodiscover.xml")
+    };
+
+    public IReadOnlyList<ExchangeUrlEntry> GetUrls(ExchangeServerEntry server, CancellationToken ct)
+    {
+        Interlocked.Increment(ref UrlCalls);
+        if (UrlsBroken.Contains(server.Fqdn)) throw new InvalidOperationException("Get-OwaVirtualDirectory: Zugriff verweigert");
+        return Urls.TryGetValue(server.Fqdn, out var l) ? l : StandardUrls(server.Name);
+    }
+
     public string? PresentedOverride { get; set; }
 
     public string? GetPresentedThumbprint(string host, int port, string sniHost, TimeSpan timeout)

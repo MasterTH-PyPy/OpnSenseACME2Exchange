@@ -43,7 +43,7 @@ partial class MainForm
         _gridServers.Rows.Clear();
         foreach (var group in ServerGrouping.Group(_cfg.Exchange.Servers))
         {
-            var h = _gridServers.Rows.Add(group.AllEnabled, group.Title, "", "", "", "", "", "", "");
+            var h = _gridServers.Rows.Add(group.AllEnabled, group.Title, "", "", "", "", "", "", "", "");
             var hr = _gridServers.Rows[h];
             hr.Tag = new ServerGroupHeader(group);
             hr.ReadOnly = true;
@@ -54,9 +54,11 @@ partial class MainForm
             foreach (var s in group.Servers)
             {
                 var i = _gridServers.Rows.Add(s.Enabled, s.Name, s.Fqdn, s.Version ?? "", s.Dag ?? "", s.Site ?? "",
-                    s.PowerShellUri ?? "", s.CurrentCertificate ?? "", s.LastStatus ?? "");
+                    s.PowerShellUri ?? "", s.CurrentCertificate ?? "", s.UrlCheckSummary ?? "", s.LastStatus ?? "");
                 var row = _gridServers.Rows[i];
                 row.Tag = s;
+                if (s.UrlCheckSummary != null && !s.UrlCheckSummary.StartsWith("OK", StringComparison.Ordinal))
+                    row.Cells["Urls"].Style.BackColor = Color.FromArgb(255, 243, 205);
                 row.Cells["Name"].Style.Padding = new Padding(HeaderIndent, 0, 0, 0);
                 ColorStatusRow(row, s.LastStatus);
                 if (s.MissingInAd) row.DefaultCellStyle.ForeColor = SystemColors.GrayText;
@@ -190,8 +192,10 @@ partial class MainForm
 
             foreach (var sr in g)
             {
-                var i = _gridResults.Rows.Add(sr.Server, sr.Action, OutcomeText(sr.Outcome), sr.Details);
+                var i = _gridResults.Rows.Add(sr.Server, sr.Action, OutcomeText(sr.Outcome),
+                    sr.Details + (sr.UrlFindings.Count > 0 ? "  [Doppelklick: URL-Befunde]" : ""));
                 var row = _gridResults.Rows[i];
+                row.Tag = sr;
                 row.DefaultCellStyle.BackColor = UiKit.OutcomeColor(sr.Outcome);
                 row.Cells["Server"].Style.Padding = new Padding(HeaderIndent, 0, 0, 0);
             }

@@ -17,6 +17,8 @@ public sealed class ServerRunResult
     public string Action { get; set; } = "";
     public ServerOutcome Outcome { get; set; }
     public string Details { get; set; } = "";
+    /// <summary>Auffällige URL-Befunde (nicht im Zertifikat, akzeptiert, DAG-Abweichung).</summary>
+    public List<UrlFinding> UrlFindings { get; set; } = new();
 }
 
 public sealed class RunResult
@@ -78,6 +80,34 @@ public sealed class DeployEngine
     public TimeSpan RetryDelay { get; init; } = TimeSpan.FromSeconds(10);
 
     public event Action<ServerRunResult>? ServerUpdated;
+
+    private readonly List<UrlCheckResult> _urlResults = new();
+
+    private string? AutodiscoverName() =>
+        _cfg.Selection.AdditionalRequiredNames.FirstOrDefault(n => n.StartsWith("autodiscover.", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>URL-Prüfung eines Servers (nur lesend). Fehler bei der Prüfung blockieren nicht.</summary>
+    private UrlCheckResult? CheckUrls(ExchangeServerEntry server, CertificateInfo cert, string hostname, string name, CancellationToken ct)
+    {
+        if (!_cfg.Exchange.CheckUrls) return null;
+        UrlCheckResult r;
+        try
+        {
+            var entries = _exchange.GetUrls(server, ct);
+            r = UrlChecker.Evaluate(server, entries, cert.DnsNames, _cfg.Exchange.AcceptedUrlHosts, hostname, AutodiscoverName());
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            r = new UrlCheckResult { Server = server.Name, Fqdn = server.Fqdn, Dag = server.Dag, Error = Log.Describe(ex) };
+            Log.Warn($"[{name}] URL-Prüfung nicht möglich: {r.Error}");
+        }
+        server.UrlCheckSummary = r.Summary;
+        foreach (var f in r.Findings.Where(f => f.Blocking))
+            Log.Warn($"[{name}] URL {f.Component} {f.Scope}: {f.Value} – {f.Message}");
+        _urlResults.Add(r);
+        return r;
+    }
 
     public RunResult Run(bool dryRun, CancellationToken ct)
     {
@@ -180,6 +210,22 @@ public sealed class DeployEngine
                 server.LastStatus = $"{sr.Outcome}: {sr.Action}";
                 ServerUpdated?.Invoke(sr);
             }
+
+            // Hinweis, wenn Server derselben DAG unterschiedliche Namen verwenden
+            if (_urlResults.Count > 1)
+            {
+                UrlChecker.CompareWithinDag(_urlResults);
+                foreach (var ur in _urlResults)
+                {
+                    var sr = result.Servers.FirstOrDefault(x => x.Server == ur.Server);
+                    if (sr == null) continue;
+                    foreach (var f in ur.Findings.Where(f => f.Kind == UrlFindingKind.DagMismatch && !sr.UrlFindings.Contains(f)))
+                    {
+                        sr.UrlFindings.Add(f);
+                        Log.Warn($"[{ur.Server}] {f.Component} {f.Scope}: {f.Message}");
+                    }
+                }
+            }
         }
         finally
         {
@@ -204,10 +250,36 @@ public sealed class DeployEngine
         };
         Log.Info($"[{name}] Entscheidung: {sr.Action} – {decision.Reason}");
 
+        var urls = CheckUrls(server, cert, hostname, name, ct);
+        if (urls != null)
+            sr.UrlFindings = urls.Findings.Where(f => f.Kind is not UrlFindingKind.Ok and not UrlFindingKind.NotSet).ToList();
+        var blockingCount = urls?.BlockingCount ?? 0;
+        string UrlNote() => $" URL-Prüfung: {blockingCount} Abweichung(en) vom Zertifikat (" +
+                            string.Join("; ", urls!.Findings.Where(f => f.Blocking).Take(3).Select(f => $"{f.Component} {f.Scope}: {f.Host ?? f.Value}")) +
+                            (blockingCount > 3 ? "; …" : "") + ").";
+        bool blocked = blockingCount > 0 && !_cfg.Exchange.DeployDespiteUrlMismatch && decision.Action != DeployAction.Skip;
+
+        if (blocked)
+        {
+            var days = current != null ? (current.NotAfter - _clock()).TotalDays : 0;
+            sr.Outcome = ServerOutcome.Warning;
+            sr.Action = dryRun ? "Würde NICHT tauschen (URLs)" : "Nicht getauscht (URLs)";
+            sr.Details = decision.Reason + UrlNote() +
+                         " URLs korrigieren und erneut prüfen – oder Option 'trotz URL-Abweichung tauschen' bzw. Host akzeptieren." +
+                         (current != null && days < 14 ? $" ACHTUNG: aktuelles Zertifikat läuft in {Math.Max(0, days):0} Tagen ab!" : "");
+            Log.Warn($"[{name}] Tausch wegen URL-Abweichungen zurückgestellt.");
+            return;
+        }
+
         if (dryRun)
         {
             sr.Outcome = decision.Action == DeployAction.Skip ? ServerOutcome.Skipped : ServerOutcome.DryRun;
             sr.Details = decision.Reason + (decision.Action == DeployAction.Skip ? "" : " (simuliert, nichts geändert)");
+            if (blockingCount > 0)
+            {
+                sr.Details += UrlNote() + (decision.Action != DeployAction.Skip ? " Wird wegen Option trotzdem getauscht." : "");
+                if (sr.Outcome == ServerOutcome.Skipped) sr.Outcome = ServerOutcome.Warning;
+            }
             if (decision.Action == DeployAction.Skip && NeedsIis(services))
             {
                 var presented = SafeProbe(server, hostname);
@@ -222,8 +294,8 @@ public sealed class DeployEngine
 
         if (decision.Action == DeployAction.Skip)
         {
-            sr.Outcome = ServerOutcome.Skipped;
-            sr.Details = decision.Reason;
+            sr.Outcome = blockingCount > 0 ? ServerOutcome.Warning : ServerOutcome.Skipped;
+            sr.Details = decision.Reason + (blockingCount > 0 ? UrlNote() : "");
             // Selbstheilung: installiert & "aktiv", aber IIS liefert etwas anderes aus -> neu binden
             if (_cfg.Exchange.VerifyAfterDeploy && NeedsIis(services) && cert.Covers(hostname)
                 && installed.Any(c => c.Thumbprint.Equals(cert.Thumbprint, StringComparison.OrdinalIgnoreCase)))
@@ -260,7 +332,7 @@ public sealed class DeployEngine
         server.CurrentCertificate = $"{thumbprint} bis {cert.NotAfter:dd.MM.yyyy}";
 
         sr.Outcome = ServerOutcome.Ok;
-        sr.Details = decision.Reason;
+        sr.Details = decision.Reason + (blockingCount > 0 ? UrlNote() + " Trotzdem getauscht (Option)." : "");
 
         if (_cfg.Exchange.VerifyAfterDeploy && NeedsIis(services))
             Verify(server, cert, hostname, sr, ct);

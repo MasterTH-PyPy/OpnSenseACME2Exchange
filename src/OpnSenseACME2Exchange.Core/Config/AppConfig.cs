@@ -80,6 +80,8 @@ public sealed class ExchangeServerEntry
     /// <summary>Letzter Status (Test/Lauf) – nur Anzeige.</summary>
     public string? LastStatus { get; set; }
     public string? CurrentCertificate { get; set; }
+    /// <summary>Ergebnis der letzten URL-Prüfung (Anzeige).</summary>
+    public string? UrlCheckSummary { get; set; }
 }
 
 public sealed class ExchangeSettings
@@ -106,6 +108,13 @@ public sealed class ExchangeSettings
 
     /// <summary>Vor jedem Lauf die Server neu aus dem AD ermitteln (neue mitnehmen, entfernte überspringen).</summary>
     public bool AutoDiscoverBeforeRun { get; set; } = true;
+
+    /// <summary>Exchange-URLs (virtuelle Verzeichnisse, Outlook Anywhere, Autodiscover) gegen das Zertifikat prüfen.</summary>
+    public bool CheckUrls { get; set; } = true;
+    /// <summary>Auch tauschen, wenn URLs nicht zum Zertifikat passen (für bewusst so gebaute Umgebungen).</summary>
+    public bool DeployDespiteUrlMismatch { get; set; }
+    /// <summary>Hosts, die bewusst nicht im Zertifikat stehen (z.B. *.corp.local) – gelten nicht als Abweichung.</summary>
+    public List<string> AcceptedUrlHosts { get; set; } = new();
 
     public string ServicesString()
     {

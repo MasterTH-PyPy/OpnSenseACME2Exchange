@@ -56,6 +56,8 @@ public interface IExchangeOperations
     void EnableCertificate(ExchangeServerEntry server, string thumbprint, string services, CancellationToken ct);
     void RemoveCertificate(ExchangeServerEntry server, string thumbprint, CancellationToken ct);
     void IisReset(ExchangeServerEntry server, CancellationToken ct);
+    /// <summary>Liest die in Exchange hinterlegten URLs/Hostnamen dieses Servers (nur lesend).</summary>
+    IReadOnlyList<ExchangeUrlEntry> GetUrls(ExchangeServerEntry server, CancellationToken ct);
 }
 
 public enum DeployAction { Skip, EnableOnly, Deploy }

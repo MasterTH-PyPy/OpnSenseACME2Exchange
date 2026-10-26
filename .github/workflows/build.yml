@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write   # Screenshots ins Repo zurückschreiben
+
 jobs:
   build:
     runs-on: windows-latest
@@ -45,6 +48,28 @@ jobs:
           dotnet publish src/OpnSenseACME2Exchange/OpnSenseACME2Exchange.csproj -c Release -r win-x64
           --self-contained false -p:PublishSingleFile=true
           -p:Version=${{ env.VERSION }} -o publish/framework-dependent
+
+      - name: Screenshots erzeugen (Demodaten, kein Dienst)
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path publish/framework-dependent/OpnSenseACME2Exchange.exe
+          $out = Join-Path $PWD 'docs/screenshots'
+          $p = Start-Process -FilePath $exe -ArgumentList '--screenshots', "`"$out`"" -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "Screenshot-Modus Exitcode $($p.ExitCode)" }
+          Get-ChildItem $out | Format-Table Name, Length
+
+      - name: Screenshots ins Repo übernehmen
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/screenshots
+          $changed = git status --porcelain -- docs/screenshots
+          if ($changed) {
+            git commit -m "Screenshots aktualisiert [skip ci]"
+            git push origin HEAD:${{ github.ref_name }}
+          } else { Write-Host "Screenshots unverändert." }
 
       - uses: actions/upload-artifact@v4
         with:

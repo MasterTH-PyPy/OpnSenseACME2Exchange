@@ -324,6 +324,117 @@ public static class ServiceTests
             Assert.True(saved.All(x => x.Dag == "DAG01" && !x.MissingInAd), "DAG/Missing bleiben");
         });
 
+        test("URL-Prüfung: passend, nicht im Zertifikat, akzeptiert, nicht gesetzt, ungültig + Korrekturbefehl", () =>
+        {
+            var srv = new ExchangeServerEntry { Name = "EXCH2", Fqdn = "exch2.corp.local", Dag = "DAG01" };
+            var entries = new List<ExchangeUrlEntry>
+            {
+                new("OWA", "Intern", @"EXCH2\owa (Default Web Site)", "https://exch2.corp.local/owa"),
+                new("OWA", "Extern", @"EXCH2\owa (Default Web Site)", "https://mail.example.de/owa"),
+                new("ECP", "Intern", @"EXCH2\ecp (Default Web Site)", "https://legacy.corp.local/ecp"),
+                new("EWS", "Extern", @"EXCH2\EWS (Default Web Site)", null),
+                new("MAPI", "Intern", @"EXCH2\mapi (Default Web Site)", "kaputt url"),
+                new("OutlookAnywhere", "Intern", @"EXCH2\Rpc (Default Web Site)", "exch2.corp.local"),
+                new("Autodiscover", "Intern", "EXCH2", "https://exch2.corp.local/Autodiscover/Autodiscover.xml")
+            };
+            var names = new[] { "mail.example.de", "autodiscover.example.de" };
+            var r = UrlChecker.Evaluate(srv, entries, names, new[] { "legacy.corp.local" }, "mail.example.de", "autodiscover.example.de");
+            UrlFinding F(string c, string sc) => r.Findings.Single(f => f.Component == c && f.Scope == sc);
+
+            Assert.Equal(UrlFindingKind.NotCovered, F("OWA", "Intern").Kind, "interne Server-URL");
+            Assert.Equal("Set-OwaVirtualDirectory -Identity 'EXCH2\\owa (Default Web Site)' -InternalUrl https://mail.example.de/owa",
+                F("OWA", "Intern").SuggestedCommand, "Vorschlag behält Pfad");
+            Assert.Equal(UrlFindingKind.Ok, F("OWA", "Extern").Kind, "passend");
+            Assert.Equal(UrlFindingKind.Accepted, F("ECP", "Intern").Kind, "akzeptierter Host");
+            Assert.Equal(UrlFindingKind.NotSet, F("EWS", "Extern").Kind, "leer");
+            Assert.Equal(UrlFindingKind.Invalid, F("MAPI", "Intern").Kind, "ungültig");
+            Assert.True(F("OutlookAnywhere", "Intern").SuggestedCommand!.Contains("-InternalHostname mail.example.de"), "OA-Vorschlag");
+            Assert.True(F("Autodiscover", "Intern").SuggestedCommand!.Contains("https://autodiscover.example.de/Autodiscover/Autodiscover.xml"), "SCP-Vorschlag");
+            Assert.Equal(4, r.BlockingCount, "blockierend: OWA intern, MAPI, OA, Autodiscover");
+
+            var accepted = UrlChecker.Evaluate(srv, entries, names, new[] { "*.corp.local" }, "mail.example.de", null);
+            Assert.Equal(1, accepted.BlockingCount, "Wildcard akzeptiert alle corp.local – nur die ungültige bleibt");
+        });
+
+        test("URL-Prüfung: DAG-Vergleich meldet abweichende externe Namen, eigene interne FQDNs sind ok", () =>
+        {
+            UrlCheckResult R(string name, string ext, string intern) => UrlChecker.Evaluate(
+                new ExchangeServerEntry { Name = name, Fqdn = intern, Dag = "DAG01" },
+                new[] { new ExchangeUrlEntry("OWA", "Extern", name, $"https://{ext}/owa"), new ExchangeUrlEntry("OWA", "Intern", name, $"https://{intern}/owa") },
+                new[] { "*.example.de", "*.corp.local" }, Array.Empty<string>(), "mail.example.de", null);
+            var list = new List<UrlCheckResult> { R("A", "mail.example.de", "a.corp.local"), R("B", "mail.example.de", "b.corp.local"), R("C", "webmail.example.de", "c.corp.local") };
+            UrlChecker.CompareWithinDag(list);
+            Assert.True(list[2].Findings.Any(f => f.Kind == UrlFindingKind.DagMismatch && f.Scope == "Extern"), "C weicht ab");
+            Assert.False(list.Take(2).Any(r => r.Findings.Any(f => f.Kind == UrlFindingKind.DagMismatch)), "A/B ok");
+            Assert.False(list.Any(r => r.Findings.Any(f => f.Kind == UrlFindingKind.DagMismatch && f.Scope == "Intern")), "eigene interne Namen kein Befund");
+            Assert.True(list.All(r => r.Ok), "DAG-Abweichung blockiert nicht");
+        });
+
+        test("Engine: URL-Abweichung blockiert den Tausch auf diesem Server, andere laufen", () =>
+        {
+            var (cfg, opn, ex, newThumb, _) = scenario();
+            ex.Urls["exch2.corp.local"] = FakeExchange.StandardUrls("EXCH2");
+            ex.Urls["exch2.corp.local"][0] = new("OWA", "Intern", @"EXCH2\owa (Default Web Site)", "https://exch2.corp.local/owa");
+            var engine = new DeployEngine(cfg, new OpnSenseCertificateSource(cfg.OpnSense, opn), ex, ex, (_, _) => { })
+                { VerifyDelay = TimeSpan.Zero, RetryDelay = TimeSpan.Zero };
+            var r = engine.Run(false, CancellationToken.None);
+            var s1 = r.Servers.Single(x => x.Server == "EXCH1");
+            var s2 = r.Servers.Single(x => x.Server == "EXCH2");
+            Assert.Equal(ServerOutcome.Ok, s1.Outcome, "EXCH1 getauscht");
+            Assert.Equal(ServerOutcome.Warning, s2.Outcome, "EXCH2 Warnung");
+            Assert.True(s2.Action.Contains("Nicht getauscht") && s2.Details.Contains("ACHTUNG"), "Aktion + Ablaufwarnung (altes Zert. 9 Tage): " + s2.Details);
+            Assert.True(s2.UrlFindings.Any(f => f.SuggestedCommand != null), "Korrekturbefehl mitgeliefert");
+            Assert.False(ex.Calls.Contains("Import exch2.corp.local"), "nicht importiert");
+            Assert.True(cfg.Exchange.Servers[1].UrlCheckSummary!.Contains("1 Abweichung"), "Zusammenfassung am Server");
+        });
+
+        test("Engine: Option 'trotzdem tauschen' bzw. akzeptierter Host lässt den Tausch zu", () =>
+        {
+            foreach (var mode in new[] { "option", "accept" })
+            {
+                var (cfg, opn, ex, newThumb, _) = scenario();
+                ex.Urls["exch2.corp.local"] = FakeExchange.StandardUrls("EXCH2");
+                ex.Urls["exch2.corp.local"][0] = new("OWA", "Intern", @"EXCH2\owa (Default Web Site)", "https://exch2.corp.local/owa");
+                if (mode == "option") cfg.Exchange.DeployDespiteUrlMismatch = true; else cfg.Exchange.AcceptedUrlHosts.Add("*.corp.local");
+                var r = new DeployEngine(cfg, new OpnSenseCertificateSource(cfg.OpnSense, opn), ex, ex, (_, _) => { })
+                    { VerifyDelay = TimeSpan.Zero, RetryDelay = TimeSpan.Zero }.Run(false, CancellationToken.None);
+                var s2 = r.Servers.Single(x => x.Server == "EXCH2");
+                Assert.Equal(ServerOutcome.Ok, s2.Outcome, mode + ": getauscht");
+                Assert.True(mode == "accept" || s2.Details.Contains("Trotzdem getauscht"), mode + ": Hinweis");
+            }
+        });
+
+        test("Engine: URL-Prüfung kaputt → kein Blocker; abgeschaltet → keine Abfrage", () =>
+        {
+            var (cfg, opn, ex, _, _) = scenario();
+            ex.UrlsBroken.Add("exch1.corp.local");
+            var r = new DeployEngine(cfg, new OpnSenseCertificateSource(cfg.OpnSense, opn), ex, ex, (_, _) => { })
+                { VerifyDelay = TimeSpan.Zero, RetryDelay = TimeSpan.Zero }.Run(false, CancellationToken.None);
+            Assert.True(r.Servers.All(x => x.Outcome == ServerOutcome.Ok), "trotzdem getauscht");
+            Assert.True(cfg.Exchange.Servers[0].UrlCheckSummary!.StartsWith("Prüfung fehlgeschlagen"), "Fehler sichtbar");
+
+            var (cfg2, opn2, ex2, _, _) = scenario();
+            cfg2.Exchange.CheckUrls = false;
+            new DeployEngine(cfg2, new OpnSenseCertificateSource(cfg2.OpnSense, opn2), ex2, ex2, (_, _) => { })
+                { VerifyDelay = TimeSpan.Zero, RetryDelay = TimeSpan.Zero }.Run(true, CancellationToken.None);
+            Assert.Equal(0, ex2.UrlCalls, "keine URL-Abfrage");
+        });
+
+        test("Dienst: 'Erneut prüfen' gegen echtes Zertifikat, Verbindungstest mit URL-Schritt", () =>
+        {
+            var (core, _, _, _, ex, _, _) = Setup();
+            TrustAll(core);
+            ex.Urls["exch2.corp.local"] = FakeExchange.StandardUrls("EXCH2", "exch2.corp.local");
+            var report = Payload<UrlCheckReport>(Call(core, Commands.CheckUrls, new CheckUrlsRequest(new List<string>())));
+            Assert.True(report.CertificateSource.StartsWith("Zertifikat"), "echtes Zertifikat: " + report.CertificateSource);
+            Assert.True(report.CertificateNames.Contains("autodiscover.example.de"), "SAN übernommen");
+            Assert.True(report.Servers.Single(x => x.Server == "EXCH1").Ok, "EXCH1 ok");
+            Assert.True(report.Servers.Single(x => x.Server == "EXCH2").BlockingCount >= 2, "EXCH2 Abweichungen");
+
+            var tests = Payload<List<ServerTestDto>>(Call(core, Commands.TestServers, new TestServersRequest(new List<string>())));
+            Assert.True(tests.All(t => t.Steps.Any(st => st.Name == "URLs")), "URL-Schritt im Verbindungstest");
+        });
+
         test("Pipe: echte Named Pipe, Anfrage → Dienst → Antwort", () =>
         {
             var (core, _, _, _, _, _, _) = Setup();

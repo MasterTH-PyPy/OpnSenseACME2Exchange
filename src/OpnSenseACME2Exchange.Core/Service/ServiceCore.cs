@@ -149,6 +149,9 @@ public sealed class ServiceCore
                 case Commands.TestServers:
                     var fqdns = PipeProtocol.FromElement<TestServersRequest>(req.Payload)?.Fqdns ?? new List<string>();
                     return await Exclusive("Teste Exchange-Server", client, (t, _) => TestServers(fqdns, t));
+                case Commands.CheckUrls:
+                    var urlTargets = PipeProtocol.FromElement<CheckUrlsRequest>(req.Payload)?.Fqdns ?? new List<string>();
+                    return await Exclusive("Prüfe Exchange-URLs", client, (t, u) => CheckUrls(urlTargets, t, u));
                 case Commands.StartRun: return StartRun(PipeProtocol.FromElement<StartRunRequest>(req.Payload)?.DryRun ?? true, client);
                 case Commands.Cancel:
                     var op = _currentOp;
@@ -287,6 +290,7 @@ public sealed class ServiceCore
                     s.Version = known.Version ?? s.Version;
                     s.PowerShellUri ??= known.PowerShellUri;
                     s.CurrentCertificate ??= known.CurrentCertificate;
+                    s.UrlCheckSummary ??= known.UrlCheckSummary;
                     s.LastStatus ??= known.LastStatus;
                 }
                 incoming.Selection.LastKnownPemPath ??= old.Selection.LastKnownPemPath;
@@ -473,10 +477,73 @@ public sealed class ServiceCore
         {
             ct.ThrowIfCancellationRequested();
             var r = ops.TestConnection(s, string.IsNullOrWhiteSpace(host) ? s.Fqdn : host, ct);
-            s.LastStatus = (r.Ok ? "OK – " : "FEHLER – ") + r.Summary;
-            results.Add(new ServerTestDto(s.Fqdn, r.Ok, r.Summary, r.Steps.ToList()));
+            var steps = r.Steps.ToList();
+            if (_cfg.Exchange.CheckUrls && r.Ok)
+            {
+                // Beim Verbindungstest gegen die konfigurierten Pflichtnamen prüfen (ohne SSH zur OPNsense)
+                var u = CheckServerUrls(ops, s, OpnSenseCertificateSource.RequiredNames(_cfg.Selection), ct);
+                steps.Add(new ConnectionStep("URLs", u.Ok, u.Summary));
+            }
+            var ok = steps.All(x => x.Ok || x.Name.StartsWith("Ping", StringComparison.Ordinal));
+            var summary = string.Join("; ", steps.Select(x => $"{x.Name}: {(x.Ok ? "OK" : "FEHLER")}{(string.IsNullOrEmpty(x.Detail) ? "" : " (" + x.Detail + ")")}"));
+            s.LastStatus = (ok ? "OK – " : "FEHLER – ") + summary;
+            results.Add(new ServerTestDto(s.Fqdn, ok, summary, steps));
         }
         return results;
+    }
+
+    private UrlCheckResult CheckServerUrls(IExchangeOperations ops, ExchangeServerEntry s, IReadOnlyList<string> certNames, CancellationToken ct)
+    {
+        UrlCheckResult r;
+        try
+        {
+            r = UrlChecker.Evaluate(s, ops.GetUrls(s, ct), certNames, _cfg.Exchange.AcceptedUrlHosts,
+                _cfg.Selection.ExchangeHostname,
+                _cfg.Selection.AdditionalRequiredNames.FirstOrDefault(n => n.StartsWith("autodiscover.", StringComparison.OrdinalIgnoreCase)));
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            r = new UrlCheckResult { Server = s.Name, Fqdn = s.Fqdn, Dag = s.Dag, Error = Log.Describe(ex) };
+        }
+        s.UrlCheckSummary = r.Summary;
+        Log.Info($"[{s.Name}] URL-Prüfung: {r.Summary}");
+        return r;
+    }
+
+    /// <summary>"Erneut prüfen": URLs gegen das echte Zertifikat der OPNsense (Fallback: konfigurierte Pflichtnamen).</summary>
+    private object CheckUrls(List<string> fqdns, CancellationToken ct, List<UnknownHostKey> unknown)
+    {
+        var warnings = new List<string>();
+        List<string> names;
+        string source;
+        try
+        {
+            using var lookup = Source(unknown).Resolve(_cfg.Selection, ct);
+            if (lookup.Bundle == null) throw new InvalidOperationException(string.Join(" ", lookup.Errors));
+            names = lookup.Bundle.Info.DnsNames.ToList();
+            source = $"Zertifikat {lookup.Bundle.Info.Thumbprint} von {lookup.SourceNode} (bis {lookup.Bundle.Info.NotAfter:dd.MM.yyyy})";
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            names = OpnSenseCertificateSource.RequiredNames(_cfg.Selection);
+            source = "konfigurierte Pflichtnamen (Zertifikat nicht abrufbar)";
+            warnings.Add("Zertifikat von der OPNsense nicht abrufbar – geprüft gegen die konfigurierten Namen: " + Log.Describe(ex));
+        }
+
+        var ops = _backend.CreateExchange(_cfg);
+        var targets = _cfg.Exchange.Servers
+            .Where(s => !s.MissingInAd && (fqdns.Count > 0 ? fqdns.Contains(s.Fqdn, StringComparer.OrdinalIgnoreCase) : s.Enabled))
+            .ToList();
+        var results = new List<UrlCheckResult>();
+        foreach (var s in targets)
+        {
+            ct.ThrowIfCancellationRequested();
+            results.Add(CheckServerUrls(ops, s, names, ct));
+        }
+        UrlChecker.CompareWithinDag(results);
+        return new UrlCheckReport(names, source, results, warnings);
     }
 
     // ───────────────────────── Läufe ─────────────────────────

@@ -25,14 +25,18 @@ public sealed partial class MainForm : Form
     private int _reconnectTick;
     private GuiSettings _gui = GuiSettings.Load();
 
-    public MainForm()
+    private readonly bool _demo;
+
+    public MainForm(bool demo = false)
     {
+        _demo = demo;
         BuildUi();
         SetConnectedUi(false);
         Load += OnFormLoad;
         FormClosing += OnFormClosing;
         _tabs.SelectedIndexChanged += async (_, _) =>
         {
+            if (_demo) return;
             if (_tabs.SelectedTab == _pageLog && _connected) await RefreshLogFilesAsync();
             if (_tabs.SelectedTab == _pageService) RefreshInstalledInfo();
         };
@@ -42,6 +46,7 @@ public sealed partial class MainForm : Form
     {
         TrySetSplitter(_splitHaproxy, 320);
         TrySetSplitter(_splitLog, 270);
+        if (_demo) return; // Screenshot-Modus: kein Dienst, keine Timer
         _txtServiceHost.Text = _gui.ServiceHost ?? "";
         _txtSvcAccount.Text = _gui.ServiceAccount ?? "";
         _txtSvcAccess.Text = _gui.ExtraAccess ?? "";
@@ -173,6 +178,9 @@ public sealed partial class MainForm : Form
         _chkIisReset.Checked = e.IisResetOnMismatch;
         _chkRemoveOld.Checked = e.RemoveReplacedCertificate;
         _chkAutoDiscover.Checked = e.AutoDiscoverBeforeRun;
+        _chkCheckUrls.Checked = e.CheckUrls;
+        _chkDeployDespite.Checked = e.DeployDespiteUrlMismatch;
+        _txtAcceptedHosts.Text = string.Join(", ", e.AcceptedUrlHosts);
         UpdateExchangeAuthUi();
 
         var a = _cfg.Auto;
@@ -259,7 +267,7 @@ public sealed partial class MainForm : Form
             {
                 s.Version = old.Version; s.Dag = old.Dag; s.Site = old.Site;
                 s.PowerShellUri = old.PowerShellUri; s.CurrentCertificate = old.CurrentCertificate; s.LastStatus = old.LastStatus;
-                s.IsEdge = old.IsEdge; s.MissingInAd = old.MissingInAd;
+                s.IsEdge = old.IsEdge; s.MissingInAd = old.MissingInAd; s.UrlCheckSummary = old.UrlCheckSummary;
             }
             cfg.Exchange.Servers.Add(s);
         }
@@ -277,6 +285,11 @@ public sealed partial class MainForm : Form
         e.IisResetOnMismatch = _chkIisReset.Checked;
         e.RemoveReplacedCertificate = _chkRemoveOld.Checked;
         e.AutoDiscoverBeforeRun = _chkAutoDiscover.Checked;
+        e.CheckUrls = _chkCheckUrls.Checked;
+        e.DeployDespiteUrlMismatch = _chkDeployDespite.Checked;
+        e.AcceptedUrlHosts = _txtAcceptedHosts.Text
+            .Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(h => h.ToLowerInvariant()).Distinct().ToList();
 
         cfg.Auto.Enabled = _chkAuto.Checked;
         cfg.Auto.Time = _dtpAutoTime.Value.ToString("HH:mm");

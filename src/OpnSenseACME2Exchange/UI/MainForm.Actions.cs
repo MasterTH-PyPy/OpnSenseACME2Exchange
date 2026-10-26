@@ -2,6 +2,7 @@ using System.Text;
 using OpnSenseACME2Exchange.Client;
 using OpnSenseACME2Exchange.Core.Certificates;
 using OpnSenseACME2Exchange.Core.Engine;
+using OpnSenseACME2Exchange.Core.Exchange;
 using OpnSenseACME2Exchange.Core.Ipc;
 using OpnSenseACME2Exchange.Core.Logging;
 using OpnSenseACME2Exchange.Core.OpnSense;
@@ -218,6 +219,37 @@ partial class MainForm
             fqdns.Count > 0 ? $"Dienst testet {fqdns.Count} Exchange-Server" : "Dienst testet alle Exchange-Server",
             Commands.TestServers, new TestServersRequest(fqdns));
         if (res != null) _status.Text = $"{res.Count(r => r.Ok)}/{res.Count} Exchange-Server OK.";
+    }
+
+    private async Task CheckUrlsAsync()
+    {
+        var fqdns = SelectedServerFqdns();
+        var report = await RunUrlCheckAsync(fqdns);
+        if (report == null) return;
+        using var form = new UrlCheckForm(report,
+            recheck: () => RunUrlCheckAsync(fqdns),
+            acceptHost: async pattern =>
+            {
+                var current = _txtAcceptedHosts.Text.Trim();
+                _txtAcceptedHosts.Text = current.Length == 0 ? pattern : current + ", " + pattern;
+                return await RunUrlCheckAsync(fqdns); // speichert vorher im Dienst
+            });
+        form.ShowDialog(this);
+    }
+
+    private Task<UrlCheckReport?> RunUrlCheckAsync(List<string> fqdns) =>
+        OpAsync<UrlCheckReport>(fqdns.Count > 0 ? $"Dienst prüft URLs von {fqdns.Count} Server(n)" : "Dienst prüft Exchange-URLs",
+            Commands.CheckUrls, new CheckUrlsRequest(fqdns));
+
+    /// <summary>Doppelklick in der Ergebnisliste: URL-Befunde dieses Servers aus dem Lauf anzeigen.</summary>
+    private void ShowRunUrlFindings(ServerRunResult sr)
+    {
+        if (sr.UrlFindings.Count == 0) return;
+        var entry = _cfg.Exchange.Servers.FirstOrDefault(s => s.Name.Equals(sr.Server, StringComparison.OrdinalIgnoreCase));
+        var result = new UrlCheckResult { Server = sr.Server, Fqdn = entry?.Fqdn, Dag = entry?.Dag, Findings = sr.UrlFindings.ToList() };
+        var report = new UrlCheckReport(new List<string>(), "Ergebnis des Laufs (nur Auffälligkeiten)", new List<UrlCheckResult> { result }, new List<string>());
+        using var form = new UrlCheckForm(report, recheck: () => RunUrlCheckAsync(entry != null ? new List<string> { entry.Fqdn } : new List<string>()), acceptHost: null);
+        form.ShowDialog(this);
     }
 
     // ───────────────────────── Ausführung ─────────────────────────

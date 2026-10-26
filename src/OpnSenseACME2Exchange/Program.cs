@@ -20,6 +20,7 @@ internal static class Program
     ///   --service              Windows-Dienst (wird vom Dienststeuerungs-Manager gestartet)
     ///   --admin &lt;datei&gt;       erhöhte Admin-Aktion (Installieren/Starten/…; startet die GUI selbst)
     ///   --run [--dry-run]      ein Lauf ohne Dienst/GUI (Diagnose), Exitcode 0 = OK, 1 = Fehler, 2 = Warnung
+    ///   --screenshots &lt;ordner&gt;  GUI mit Demodaten als PNGs rendern (Doku/CI)
     /// </summary>
     [STAThread]
     private static int Main(string[] args)
@@ -37,6 +38,16 @@ internal static class Program
             return AdminActions.Execute(args[adminIdx + 1]);
 
         if (Has("--run")) return RunHeadless(Has("--dry-run"));
+
+        var shotIdx = Array.FindIndex(args, a => a.Equals("--screenshots", StringComparison.OrdinalIgnoreCase));
+        if (shotIdx >= 0)
+        {
+            // Doku: GUI mit Demodaten rendern (kein Dienst, kein Netzwerk)
+            Log.Configure(Path.Combine(Path.GetTempPath(), "o2e-screenshots"), 1, false);
+            ApplicationConfiguration.Initialize();
+            MainForm.RenderScreenshots(shotIdx + 1 < args.Length ? args[shotIdx + 1] : "screenshots");
+            return 0;
+        }
 
         Log.Configure(AppPaths.GuiLogDirectory, 14, false);
         using var single = new Mutex(true, @"Local\OpnSenseACME2Exchange_GUI", out bool first);

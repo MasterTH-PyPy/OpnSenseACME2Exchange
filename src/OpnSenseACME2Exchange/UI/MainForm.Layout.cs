@@ -37,7 +37,10 @@ partial class MainForm
     private TextBox _txtExUser = null!, _txtExPassword = null!;
     private ComboBox _cmbExAuth = null!;
     private CheckBox _chkIis = null!, _chkSmtp = null!, _chkImap = null!, _chkPop = null!;
-    private CheckBox _chkExportable = null!, _chkVerify = null!, _chkIisReset = null!, _chkRemoveOld = null!, _chkAutoDiscover = null!;
+    private CheckBox _chkExportable = null!, _chkVerify = null!, _chkIisReset = null!, _chkRemoveOld = null!, _chkAutoDiscover = null!,
+        _chkCheckUrls = null!, _chkDeployDespite = null!;
+    private TextBox _txtAcceptedHosts = null!;
+    private Button _btnCheckUrls = null!;
 
     // Ausführung
     private Button _btnDryRun = null!, _btnRunNow = null!, _btnCancel = null!;
@@ -239,15 +242,17 @@ partial class MainForm
         _gridServers.Columns.Add(Col("Site", "Site", 10, readOnly: true));
         _gridServers.Columns.Add(Col("Uri", "Remote-PowerShell", 18, readOnly: true));
         _gridServers.Columns.Add(Col("Cert", "Aktuelles IIS-Zertifikat", 24, readOnly: true));
+        _gridServers.Columns.Add(Col("Urls", "URL-Prüfung", 18, readOnly: true));
         _gridServers.Columns.Add(Col("Status", "Status", 30, readOnly: true));
         WireServerGrid();
 
         _btnDiscover = Btn("Exchange-Server aus AD ermitteln", async (_, _) => await DiscoverServersAsync());
         _btnTestServers = Btn("Verbindung testen (Auswahl / alle)", async (_, _) => await TestServersAsync());
+        _btnCheckUrls = Btn("URLs prüfen …", async (_, _) => await CheckUrlsAsync());
         var gridPanel = new TableLayoutPanel { ColumnCount = 1, RowCount = 2 };
         gridPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         gridPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        gridPanel.Controls.Add(Flow(_btnDiscover, _btnTestServers), 0, 0);
+        gridPanel.Controls.Add(Flow(_btnDiscover, _btnTestServers, _btnCheckUrls), 0, 0);
         gridPanel.Controls.Add(_gridServers, 0, 1);
         var grpServers = Grp("Exchange-Server im Cluster", gridPanel, DockStyle.Fill);
 
@@ -275,13 +280,20 @@ partial class MainForm
         _chkIisReset = Chk("Bei Abweichung iisreset /noforce ausführen");
         _chkRemoveOld = Chk("Ersetztes altes Zertifikat entfernen (nur eindeutige Vorgänger)");
         _chkAutoDiscover = Chk("Vor jedem Lauf mit dem AD abgleichen (neue Server mitnehmen, entfernte überspringen)");
+        _chkCheckUrls = Chk("Exchange-URLs gegen das Zertifikat prüfen (virt. Verzeichnisse, Outlook Anywhere, Autodiscover)");
+        _chkDeployDespite = Chk("Bei URL-Abweichungen trotzdem tauschen");
+        _txtAcceptedHosts = Txt(360);
+        _txtAcceptedHosts.PlaceholderText = "bewusst nicht im Zertifikat, z.B. *.corp.local (kommagetrennt)";
         var opts = Rows(
             ("Dienste:", Flow(_chkIis, _chkSmtp, _chkImap, _chkPop)),
             ("", _chkExportable),
             ("", _chkVerify),
             ("", _chkIisReset),
             ("", _chkRemoveOld),
-            ("", _chkAutoDiscover));
+            ("", _chkAutoDiscover),
+            ("", _chkCheckUrls),
+            ("", _chkDeployDespite),
+            ("Akzeptierte Hosts:", _txtAcceptedHosts));
 
         var bottom = new TableLayoutPanel { ColumnCount = 2, Dock = DockStyle.Bottom, AutoSize = true };
         bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
@@ -334,6 +346,10 @@ partial class MainForm
         _gridResults.Columns.Add(Col("Details", "Details", 58));
         _gridResults.DefaultCellStyle.WrapMode = DataGridViewTriState.True;
         _gridResults.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.AllCells;
+        _gridResults.CellDoubleClick += (_, e) =>
+        {
+            if (e.RowIndex >= 0 && _gridResults.Rows[e.RowIndex].Tag is Core.Engine.ServerRunResult sr) ShowRunUrlFindings(sr);
+        };
         var resPanel = new Panel { Dock = DockStyle.Fill };
         resPanel.Controls.Add(_gridResults);
         resPanel.Controls.Add(_lblRunCert);

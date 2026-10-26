@@ -20,7 +20,14 @@ public sealed record ExchangeCredentials(bool UseCurrentUser, string? Username, 
 public sealed class ExchangePowerShellOperations : IExchangeOperations
 {
     private static readonly string[] CertCommands =
-        { "Get-ExchangeServer", "Get-ExchangeCertificate", "Import-ExchangeCertificate", "Enable-ExchangeCertificate", "Remove-ExchangeCertificate" };
+    {
+        "Get-ExchangeServer", "Get-ExchangeCertificate", "Import-ExchangeCertificate", "Enable-ExchangeCertificate", "Remove-ExchangeCertificate",
+        // nur lesend – für die URL-Prüfung
+        "Get-OwaVirtualDirectory", "Get-EcpVirtualDirectory", "Get-WebServicesVirtualDirectory", "Get-OabVirtualDirectory",
+        "Get-ActiveSyncVirtualDirectory", "Get-MapiVirtualDirectory", "Get-OutlookAnywhere",
+        // Wildcard: deckt Get-ClientAccessService (2016+) und Get-ClientAccessServer (2013) ab, ohne Fehler, wenn eins fehlt
+        "Get-ClientAccessServ*"
+    };
 
     private const string ConnectBlock = """
         param($in)
@@ -190,6 +197,55 @@ public sealed class ExchangePowerShellOperations : IExchangeOperations
             ["Password"] = _cred.UseCurrentUser ? null : _cred.Password
         }, TimeSpan.FromMinutes(5), ct);
         Log.Info($"[{Identity(server)}] iisreset: {res?["Output"]?.GetValue<string>()?.Trim()}");
+    }
+
+    /// <summary>Liest URLs der virtuellen Verzeichnisse, Outlook-Anywhere-Hostnamen und die Autodiscover-SCP-URI (nur lesend).</summary>
+    public IReadOnlyList<ExchangeUrlEntry> GetUrls(ExchangeServerEntry server, CancellationToken ct)
+    {
+        const string body = """
+            $list = New-Object System.Collections.ArrayList
+            function Add-Url($c, $s, $id, $v) {
+                [void]$list.Add([pscustomobject]@{ Component = $c; Scope = $s; Identity = "$id"; Value = $(if ($v) { "$v" } else { $null }) })
+            }
+            $srv = $in.Server
+            $vdirs = @(
+                @{ C = 'OWA';  N = 'Get-OwaVirtualDirectory' },
+                @{ C = 'ECP';  N = 'Get-EcpVirtualDirectory' },
+                @{ C = 'EWS';  N = 'Get-WebServicesVirtualDirectory' },
+                @{ C = 'OAB';  N = 'Get-OabVirtualDirectory' },
+                @{ C = 'EAS';  N = 'Get-ActiveSyncVirtualDirectory' },
+                @{ C = 'MAPI'; N = 'Get-MapiVirtualDirectory' }
+            )
+            foreach ($v in $vdirs) {
+                if (-not (Get-Command $v.N -ErrorAction SilentlyContinue)) { continue }
+                foreach ($d in @(& $v.N -Server $srv -ADPropertiesOnly)) {
+                    Add-Url $v.C 'Intern' $d.Identity $d.InternalUrl
+                    Add-Url $v.C 'Extern' $d.Identity $d.ExternalUrl
+                }
+            }
+            if (Get-Command Get-OutlookAnywhere -ErrorAction SilentlyContinue) {
+                foreach ($oa in @(Get-OutlookAnywhere -Server $srv -ADPropertiesOnly)) {
+                    Add-Url 'OutlookAnywhere' 'Intern' $oa.Identity $oa.InternalHostname
+                    Add-Url 'OutlookAnywhere' 'Extern' $oa.Identity $oa.ExternalHostname
+                }
+            }
+            $cas = $null
+            if (Get-Command Get-ClientAccessService -ErrorAction SilentlyContinue) { $cas = Get-ClientAccessService -Identity $srv }
+            elseif (Get-Command Get-ClientAccessServer -ErrorAction SilentlyContinue) { $cas = Get-ClientAccessServer -Identity $srv }
+            if ($cas) { Add-Url 'Autodiscover' 'Intern' $cas.Identity $cas.AutoDiscoverServiceInternalUri }
+            [pscustomobject]@{ Urls = @($list) }
+            """;
+        var res = Exec(server, body, new(), TimeSpan.FromMinutes(3), ct);
+        var list = new List<ExchangeUrlEntry>();
+        var node = res?["Urls"];
+        var items = node is JsonArray a ? a.OfType<JsonObject>() : node is JsonObject o ? new[] { o } : Enumerable.Empty<JsonObject>();
+        foreach (var i in items)
+            list.Add(new ExchangeUrlEntry(
+                i["Component"]?.GetValue<string>() ?? "?",
+                i["Scope"]?.GetValue<string>() ?? "?",
+                i["Identity"]?.GetValue<string>() ?? "",
+                i["Value"]?.GetValue<string>()));
+        return list;
     }
 
     public ConnectionTestResult TestConnection(ExchangeServerEntry server, string externalHostname, CancellationToken ct)

@@ -78,6 +78,7 @@ public static class Commands
     public const string ResolveCertificate = "ResolveCertificate";
     public const string DiscoverServers = "DiscoverServers";
     public const string TestServers = "TestServers";
+    public const string CheckUrls = "CheckUrls";
     public const string StartRun = "StartRun";
     public const string Cancel = "Cancel";
     public const string ListLogs = "ListLogs";

@@ -17,6 +17,17 @@ Die Lösung besteht aus **einer EXE in zwei Rollen**:
                                          └──────────────────────────────────────────────┘
 ```
 
+## Screenshots
+
+Die Bilder erzeugt die CI bei jedem Build automatisch mit Demodaten (`OpnSenseACME2Exchange.exe --screenshots <ordner>`).
+
+| | |
+|---|---|
+| **OPNsense-Cluster** ![OPNsense](docs/screenshots/01-opnsense.png) | **HAProxy / Zertifikat** ![HAProxy](docs/screenshots/02-haproxy-zertifikat.png) |
+| **Exchange, nach DAG gruppiert** ![Exchange](docs/screenshots/03-exchange-dag-gruppen.png) | **Ausführung** ![Ausführung](docs/screenshots/04-ausfuehrung.png) |
+| **Log (live vom Dienst)** ![Log](docs/screenshots/05-log.png) | **Dienstverwaltung** ![Dienst](docs/screenshots/06-dienst.png) |
+| **URL-Prüfung** ![URL-Prüfung](docs/screenshots/07-url-pruefung.png) | |
+
 ## Installation
 
 1. EXE starten und den Reiter **Dienst** öffnen.
@@ -59,8 +70,9 @@ Jede Aktion speichert die aktuelle Konfiguration vorher im Dienst. Passwörter g
 3. Gewählt wird das Zertifikat mit Private Key, das alle Pflichtnamen abdeckt und am längsten gültig ist.
 4. Prüfung: Gültigkeit, Namen und Key. Hinweise gibt es bei ECDSA, fehlender Kette und baldigem Ablauf.
 5. Das PFX entsteht nur im Arbeitsspeicher, mit Einmal-Passwort.
-6. Ist „Vor jedem Lauf mit dem AD abgleichen“ an (Standard), wird die Serverliste aktualisiert: Neue Server werden übernommen und aktiviert (Edge nicht), nicht mehr vorhandene übersprungen und gemeldet. Ist das AD nicht erreichbar, läuft der Lauf mit der bekannten Liste.
-7. Pro Exchange-Server wird nur getauscht, **wenn das neue Zertifikat wirklich neuer ist**, oder wenn das aktive Zertifikat den Namen nicht abdeckt bzw. abgelaufen ist. Dann folgen `Import-ExchangeCertificate` und `Enable-ExchangeCertificate`. Zum Schluss wird per **TLS geprüft**, was IIS tatsächlich ausliefert.
+6. **URL-Prüfung** (Standard an): Gelesen werden die internen und externen URLs von OWA, ECP, EWS, OAB, ActiveSync und MAPI, die Hostnamen von Outlook Anywhere und die Autodiscover-URI (SCP). Jeder Host wird gegen die SANs geprüft. Passt etwas nicht, wird auf **diesem** Server **nicht getauscht**; im Ergebnis steht eine Warnung, und läuft das aktive Zertifikat bald ab, wird darauf hingewiesen. Das Tool ändert keine URLs. Unter **Exchange → URLs prüfen …** gibt es Korrekturbefehle zum Kopieren, **Erneut prüfen** und **Host bewusst akzeptieren** (z.B. `*.corp.local`). Mit der Option **„Bei URL-Abweichungen trotzdem tauschen“** wird für bewusst so gebaute Umgebungen dennoch getauscht. Zusätzlich wird gemeldet, wenn Server derselben DAG unterschiedliche externe Namen verwenden.
+7. Ist „Vor jedem Lauf mit dem AD abgleichen“ an (Standard), wird die Serverliste aktualisiert: Neue Server werden übernommen und aktiviert (Edge nicht), nicht mehr vorhandene übersprungen und gemeldet. Ist das AD nicht erreichbar, läuft der Lauf mit der bekannten Liste.
+8. Pro Exchange-Server wird nur getauscht, **wenn das neue Zertifikat wirklich neuer ist**, oder wenn das aktive Zertifikat den Namen nicht abdeckt bzw. abgelaufen ist. Dann folgen `Import-ExchangeCertificate` und `Enable-ExchangeCertificate`. Zum Schluss wird per **TLS geprüft**, was IIS tatsächlich ausliefert.
 
 ## Selbstheilung
 
@@ -106,7 +118,7 @@ OpnSenseACME2Exchange.exe --run [--dry-run]   Diagnose-Lauf ohne Dienst (Exitcod
 
 ```
 dotnet build OpnSenseACME2Exchange.sln -c Release
-dotnet run --project tests/OpnSenseACME2Exchange.Tests      # 43 Logik-Tests (laufen auch unter Linux)
+dotnet run --project tests/OpnSenseACME2Exchange.Tests      # 49 Logik-Tests (laufen auch unter Linux)
 ```
 
 Die gesamte Fachlogik (Parser, Zertifikate, Entscheidung, Engine, **Dienstkern und Protokoll**) liegt in `OpnSenseACME2Exchange.Core` ohne externe Abhängigkeiten. Die GitHub Action baut auf `windows-latest`.
