@@ -94,11 +94,13 @@ public static class UrlChecker
         {
             var list = dag.ToList();
             if (list.Count < 2) continue;
-            var keys = list.SelectMany(r => r.Findings).Where(f => f.Host != null).Select(f => (f.Component, f.Scope)).Distinct();
+            // Materialisieren: unten werden den Listen Befunde hinzugefügt
+            var keys = list.SelectMany(r => r.Findings).Where(f => f.Host != null && f.Kind != UrlFindingKind.DagMismatch)
+                .Select(f => (f.Component, f.Scope)).Distinct().ToList();
             foreach (var (component, scope) in keys)
             {
                 var hosts = list
-                    .Select(r => (r.Server, Host: r.Findings.FirstOrDefault(f => f.Component == component && f.Scope == scope)?.Host))
+                    .Select(r => (r.Server, Host: r.Findings.FirstOrDefault(f => f.Component == component && f.Scope == scope && f.Kind != UrlFindingKind.DagMismatch)?.Host))
                     .ToList();
                 var distinct = hosts.Where(h => h.Host != null).Select(h => h.Host!.ToLowerInvariant()).Distinct().ToList();
                 // Interne URLs auf den eigenen Servernamen sind ein typisches, gewolltes Muster – nur gleiche "Fremd"-Namen vergleichen
@@ -108,8 +110,9 @@ public static class UrlChecker
                 var majority = hosts.Where(h => h.Host != null).GroupBy(h => h.Host!.ToLowerInvariant()).OrderByDescending(g => g.Count()).First().Key;
                 foreach (var r in list)
                 {
-                    var f = r.Findings.FirstOrDefault(x => x.Component == component && x.Scope == scope);
+                    var f = r.Findings.FirstOrDefault(x => x.Component == component && x.Scope == scope && x.Kind != UrlFindingKind.DagMismatch);
                     if (f?.Host == null || f.Host.Equals(majority, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (r.Findings.Any(x => x.Kind == UrlFindingKind.DagMismatch && x.Component == component && x.Scope == scope)) continue;
                     r.Findings.Add(f with
                     {
                         Kind = UrlFindingKind.DagMismatch,

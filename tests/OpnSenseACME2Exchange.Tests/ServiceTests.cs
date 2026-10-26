@@ -364,6 +364,12 @@ public static class ServiceTests
                 new[] { "*.example.de", "*.corp.local" }, Array.Empty<string>(), "mail.example.de", null);
             var list = new List<UrlCheckResult> { R("A", "mail.example.de", "a.corp.local"), R("B", "mail.example.de", "b.corp.local"), R("C", "webmail.example.de", "c.corp.local") };
             UrlChecker.CompareWithinDag(list);
+            // Reihenfolge egal: abweichender Server vorne (hat früher 'Collection was modified' ausgelöst)
+            var reversed = new List<UrlCheckResult> { R("C", "webmail.example.de", "c.corp.local"), R("A", "mail.example.de", "a.corp.local"), R("B", "mail.example.de", "b.corp.local") };
+            UrlChecker.CompareWithinDag(reversed);
+            Assert.Equal(1, reversed.Sum(r => r.Findings.Count(f => f.Kind == UrlFindingKind.DagMismatch)), "genau ein Befund, auch umgekehrt");
+            UrlChecker.CompareWithinDag(reversed);
+            Assert.Equal(1, reversed.Sum(r => r.Findings.Count(f => f.Kind == UrlFindingKind.DagMismatch)), "zweiter Aufruf erzeugt keine Dubletten");
             Assert.True(list[2].Findings.Any(f => f.Kind == UrlFindingKind.DagMismatch && f.Scope == "Extern"), "C weicht ab");
             Assert.False(list.Take(2).Any(r => r.Findings.Any(f => f.Kind == UrlFindingKind.DagMismatch)), "A/B ok");
             Assert.False(list.Any(r => r.Findings.Any(f => f.Kind == UrlFindingKind.DagMismatch && f.Scope == "Intern")), "eigene interne Namen kein Befund");
