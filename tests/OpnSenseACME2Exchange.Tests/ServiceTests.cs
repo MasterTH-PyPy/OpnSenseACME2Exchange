@@ -250,7 +250,7 @@ public static class ServiceTests
                 E("EX1", "DAG-B", "HQ", cert: "AAA bis 24.01.2027"), E("EX9", "DAG-A", "DR", cert: "BBB bis 01.12.2026"),
                 E("EX8", "dag-a", "AS", cert: "CCC bis 24.01.2027", on: false)
             });
-            Assert.Equal("DAG DAG-A|DAG DAG-B|Ohne DAG|Edge-Transport", string.Join("|", groups.Select(g => g.Title)), "Reihenfolge");
+            Assert.Equal("DAG-A|DAG-B|Ohne DAG|Edge-Transport", string.Join("|", groups.Select(g => g.Title)), "Reihenfolge");
             Assert.Equal("EX8,EX9", string.Join(",", groups[0].Servers.Select(x => x.Name)), "DAG-Name unabhängig von Groß/klein, sortiert nach Site");
             Assert.True(groups[1].CertificatesConsistent && groups[1].Summary.Contains("alle gleiches Zertifikat bis 24.01.2027"), groups[1].Summary);
             Assert.False(groups[0].CertificatesConsistent, "uneinheitlich erkannt");

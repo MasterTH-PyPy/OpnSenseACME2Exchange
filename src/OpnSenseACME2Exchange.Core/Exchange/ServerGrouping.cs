@@ -74,7 +74,7 @@ public static class ServerGrouping
                     ? new ServerGroup { Key = key, Kind = ServerGroupKind.Edge, Title = "Edge-Transport" }
                     : string.IsNullOrWhiteSpace(s.Dag)
                         ? new ServerGroup { Key = key, Kind = ServerGroupKind.NoDag, Title = "Ohne DAG" }
-                        : new ServerGroup { Key = key, Kind = ServerGroupKind.Dag, Title = "DAG " + s.Dag!.Trim() };
+                        : new ServerGroup { Key = key, Kind = ServerGroupKind.Dag, Title = DagTitle(s.Dag!) };
                 groups[key] = g;
             }
             g.Servers.Add(s);
@@ -94,6 +94,13 @@ public static class ServerGrouping
             .OrderBy(g => g.Kind)
             .ThenBy(g => g.Title, StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    /// <summary>"DAG01" bleibt "DAG01", "Mail" wird "DAG Mail".</summary>
+    public static string DagTitle(string dag)
+    {
+        var d = dag.Trim();
+        return d.StartsWith("DAG", StringComparison.OrdinalIgnoreCase) ? d : "DAG " + d;
     }
 
     /// <summary>Liest "THUMBPRINT bis dd.MM.yyyy" (Anzeigeformat von CurrentCertificate).</summary>

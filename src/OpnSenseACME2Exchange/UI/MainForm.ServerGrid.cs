@@ -57,7 +57,7 @@ partial class MainForm
                     s.PowerShellUri ?? "", s.CurrentCertificate ?? "", s.UrlCheckSummary ?? "", s.LastStatus ?? "");
                 var row = _gridServers.Rows[i];
                 row.Tag = s;
-                if (s.UrlCheckSummary != null && !s.UrlCheckSummary.StartsWith("OK", StringComparison.Ordinal))
+                if (!string.IsNullOrEmpty(s.UrlCheckSummary) && !s.UrlCheckSummary.StartsWith("OK", StringComparison.Ordinal))
                     row.Cells["Urls"].Style.BackColor = Color.FromArgb(255, 243, 205);
                 row.Cells["Name"].Style.Padding = new Padding(HeaderIndent, 0, 0, 0);
                 ColorStatusRow(row, s.LastStatus);
@@ -181,7 +181,7 @@ partial class MainForm
         foreach (var g in groups)
         {
             var sample = g.Select(sr => Entry(sr.Server)).FirstOrDefault(e => e != null);
-            var title = g.Key == "~edge" ? "Edge-Transport" : g.Key == "~nodag" ? "Ohne DAG" : "DAG " + sample?.Dag;
+            var title = g.Key == "~edge" ? "Edge-Transport" : g.Key == "~nodag" ? "Ohne DAG" : ServerGrouping.DagTitle(sample?.Dag ?? "?");
             var counts = string.Join(", ", g.GroupBy(sr => sr.Outcome).OrderBy(x => x.Key)
                 .Select(x => $"{x.Count()} {OutcomeText(x.Key)}"));
             var h = _gridResults.Rows.Add(title, "", "", $"{g.Count()} Server: {counts}");

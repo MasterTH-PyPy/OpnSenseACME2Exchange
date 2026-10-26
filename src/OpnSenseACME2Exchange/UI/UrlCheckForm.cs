@@ -44,8 +44,8 @@ public sealed class UrlCheckForm : Form
         _grid.Columns.Add(Col("Server", "Server", 10));
         _grid.Columns.Add(Col("Component", "Komponente", 9));
         _grid.Columns.Add(Col("Scope", "Bereich", 6));
-        _grid.Columns.Add(Col("Value", "Hinterlegt", 30));
-        _grid.Columns.Add(Col("Result", "Ergebnis", 9));
+        _grid.Columns.Add(Col("Value", "Hinterlegt", 27));
+        _grid.Columns.Add(Col("Result", "Ergebnis", 12));
         _grid.Columns.Add(Col("Message", "Hinweis", 36));
         _grid.SelectionChanged += (_, _) => UpdateButtons();
         _grid.CellDoubleClick += (_, _) => CopySelected();

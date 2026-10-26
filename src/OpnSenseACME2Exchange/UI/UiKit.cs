@@ -12,6 +12,7 @@ internal static class UiKit
         AutoSize = true,
         Anchor = AnchorStyles.Left,
         Margin = new Padding(3, 6, 3, 3),
+        MaximumSize = new Size(900, 0), // lange Hinweise umbrechen statt abschneiden
         Font = bold ? BoldFont : null!
     };
 

@@ -276,13 +276,19 @@ partial class MainForm
         _chkImap = Chk("IMAP");
         _chkPop = Chk("POP");
         _chkExportable = Chk("Private Key auf Exchange exportierbar");
-        _chkVerify = Chk("Nach dem Tausch per TLS prüfen, was IIS ausliefert (inkl. Selbstheilung)");
+        _chkVerify = Chk("Nach dem Tausch per TLS prüfen (inkl. Selbstheilung)");
         _chkIisReset = Chk("Bei Abweichung iisreset /noforce ausführen");
-        _chkRemoveOld = Chk("Ersetztes altes Zertifikat entfernen (nur eindeutige Vorgänger)");
-        _chkAutoDiscover = Chk("Vor jedem Lauf mit dem AD abgleichen (neue Server mitnehmen, entfernte überspringen)");
-        _chkCheckUrls = Chk("Exchange-URLs gegen das Zertifikat prüfen (virt. Verzeichnisse, Outlook Anywhere, Autodiscover)");
+        _chkRemoveOld = Chk("Ersetztes altes Zertifikat entfernen");
+        _chkAutoDiscover = Chk("Vor jedem Lauf mit dem AD abgleichen");
+        _chkCheckUrls = Chk("Exchange-URLs gegen das Zertifikat prüfen");
         _chkDeployDespite = Chk("Bei URL-Abweichungen trotzdem tauschen");
-        _txtAcceptedHosts = Txt(360);
+        var tips = new ToolTip { AutoPopDelay = 15000 };
+        tips.SetToolTip(_chkAutoDiscover, "Neue Exchange-Server werden übernommen und aktiviert (Edge nicht), nicht mehr vorhandene übersprungen und gemeldet.");
+        tips.SetToolTip(_chkCheckUrls, "Interne/externe URLs von OWA, ECP, EWS, OAB, ActiveSync, MAPI, Outlook Anywhere und Autodiscover (SCP) gegen die Namen im Zertifikat prüfen – nur lesend.");
+        tips.SetToolTip(_chkDeployDespite, "Ohne diese Option wird auf Servern mit URL-Abweichungen nicht getauscht (Warnung im Ergebnis).");
+        tips.SetToolTip(_chkVerify, "Per TLS prüfen, welches Zertifikat IIS tatsächlich ausliefert; bei Abweichung wird neu gebunden.");
+        tips.SetToolTip(_chkRemoveOld, "Nur eindeutige Vorgänger: gleicher Name, nicht selbstsigniert, keine weiteren Dienste gebunden.");
+        _txtAcceptedHosts = Txt(320);
         _txtAcceptedHosts.PlaceholderText = "bewusst nicht im Zertifikat, z.B. *.corp.local (kommagetrennt)";
         var opts = Rows(
             ("Dienste:", Flow(_chkIis, _chkSmtp, _chkImap, _chkPop)),
