@@ -1,0 +1,57 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # für die Versionsnummer aus der Commit-Anzahl
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Version bestimmen
+        shell: pwsh
+        run: |
+          $count = git rev-list --count HEAD
+          "VERSION=1.0.$count" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Version 1.0.$count"
+
+      - name: Restore
+        run: dotnet restore OpnSenseACME2Exchange.sln
+
+      - name: Build
+        run: dotnet build OpnSenseACME2Exchange.sln -c Release --no-restore -p:Version=${{ env.VERSION }}
+
+      - name: Tests
+        run: dotnet run --project tests/OpnSenseACME2Exchange.Tests -c Release --no-build
+
+      - name: Publish (self-contained, eine EXE)
+        run: >
+          dotnet publish src/OpnSenseACME2Exchange/OpnSenseACME2Exchange.csproj -c Release -r win-x64
+          --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:Version=${{ env.VERSION }} -o publish/self-contained
+
+      - name: Publish (framework-dependent, braucht .NET 10 Desktop Runtime)
+        run: >
+          dotnet publish src/OpnSenseACME2Exchange/OpnSenseACME2Exchange.csproj -c Release -r win-x64
+          --self-contained false -p:PublishSingleFile=true
+          -p:Version=${{ env.VERSION }} -o publish/framework-dependent
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpnSenseACME2Exchange-${{ env.VERSION }}-win-x64-selfcontained
+          path: publish/self-contained/*.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpnSenseACME2Exchange-${{ env.VERSION }}-win-x64
+          path: publish/framework-dependent/*.exe

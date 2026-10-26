@@ -1,0 +1,11 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>OpnSenseACME2Exchange.Core</RootNamespace>
+    <!-- Bewusst ohne NuGet-Abhängigkeiten: die komplette Logik ist plattformneutral testbar. -->
+  </PropertyGroup>
+
+</Project>
