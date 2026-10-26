@@ -39,14 +39,14 @@ partial class MainForm
             form._tabs.SelectedTab = page;
             if (page == form._pageHaproxy && form._lstSections.Items.Count > 0) form._lstSections.SelectedIndex = 0;
             Pump();
-            Capture(form, Path.Combine(directory, file));
+            CaptureForm(form, Path.Combine(directory, file));
         }
 
         using var url = new UrlCheckForm(DemoUrlReport(), recheck: null, acceptHost: null)
             { StartPosition = FormStartPosition.Manual, Location = new Point(0, 0) };
         url.Show();
         Pump();
-        Capture(url, Path.Combine(directory, "07-url-pruefung.png"));
+        CaptureForm(url, Path.Combine(directory, "07-url-pruefung.png"));
         url.Close();
         form._connected = false; // keine Rückfrage beim Schließen
         form.Close();
@@ -57,7 +57,7 @@ partial class MainForm
         for (int i = 0; i < 5; i++) { Application.DoEvents(); Thread.Sleep(60); }
     }
 
-    private static void Capture(Form f, string path)
+    private static void CaptureForm(Form f, string path)
     {
         f.Refresh();
         using var bmp = new Bitmap(f.Width, f.Height);

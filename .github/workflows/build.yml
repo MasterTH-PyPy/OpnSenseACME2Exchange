@@ -55,6 +55,12 @@ jobs:
           $exe = Resolve-Path publish/framework-dependent/OpnSenseACME2Exchange.exe
           $out = Join-Path $PWD 'docs/screenshots'
           $p = Start-Process -FilePath $exe -ArgumentList '--screenshots', "`"$out`"" -PassThru -Wait
+          $err = Join-Path $out 'screenshot-error.txt'
+          if (Test-Path $err) {
+            $text = (Get-Content $err -Raw) -replace "`r?`n", ' | '
+            Write-Host "::error title=Screenshot-Modus::$text"
+            Remove-Item $err
+          }
           if ($p.ExitCode -ne 0) { throw "Screenshot-Modus Exitcode $($p.ExitCode)" }
           Get-ChildItem $out | Format-Table Name, Length
 

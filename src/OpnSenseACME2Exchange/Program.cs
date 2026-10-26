@@ -45,8 +45,19 @@ internal static class Program
             // Doku: GUI mit Demodaten rendern (kein Dienst, kein Netzwerk)
             Log.Configure(Path.Combine(Path.GetTempPath(), "o2e-screenshots"), 1, false);
             ApplicationConfiguration.Initialize();
-            MainForm.RenderScreenshots(shotIdx + 1 < args.Length ? args[shotIdx + 1] : "screenshots");
-            return 0;
+            var dir = shotIdx + 1 < args.Length ? args[shotIdx + 1] : "screenshots";
+            try
+            {
+                MainForm.RenderScreenshots(dir);
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                // Für die CI lesbar machen (WinExe hat keine Konsole)
+                Directory.CreateDirectory(dir);
+                File.WriteAllText(Path.Combine(dir, "screenshot-error.txt"), ex.ToString());
+                return 3;
+            }
         }
 
         Log.Configure(AppPaths.GuiLogDirectory, 14, false);
