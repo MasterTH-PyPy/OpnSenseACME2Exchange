@@ -118,7 +118,17 @@ public sealed class DeployEngine
     private void RunCore(RunResult result, bool dryRun, CancellationToken ct)
     {
         var hostname = _cfg.Selection.ExchangeHostname.Trim().ToLowerInvariant();
-        var servers = _cfg.Exchange.Servers.Where(s => s.Enabled && !string.IsNullOrWhiteSpace(s.Fqdn)).ToList();
+        var servers = _cfg.Exchange.Servers.Where(s => s.Enabled && !s.MissingInAd && !string.IsNullOrWhiteSpace(s.Fqdn)).ToList();
+        foreach (var gone in _cfg.Exchange.Servers.Where(s => s.Enabled && s.MissingInAd))
+        {
+            var msg = $"{gone.Name}: nicht mehr im AD gefunden – übersprungen (Haken entfernen, wenn der Server abgebaut ist).";
+            result.Warnings.Add(msg);
+            Log.Warn(msg);
+            result.Servers.Add(new ServerRunResult
+            {
+                Server = gone.Name, Action = "Übersprungen", Outcome = ServerOutcome.Warning, Details = "Nicht mehr im AD gefunden."
+            });
+        }
         var services = ExchangeCertInfo.ParseServices(_cfg.Exchange.ServicesString());
 
         if (string.IsNullOrWhiteSpace(hostname)) throw new InvalidOperationException("Kein Exchange-Hostname konfiguriert.");

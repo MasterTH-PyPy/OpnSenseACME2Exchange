@@ -47,7 +47,7 @@ Unter **Dienst → Verbindung** den Servernamen eintragen. Die Pipe läuft über
 
 1. **OPNsense**: Beide Cluster-Knoten eintragen, SSH-Anmeldung setzen und **Verbindung testen**. Der Dienst meldet unbekannte SSH-Hostkeys an die GUI, die sie zur Bestätigung anzeigt. Danach sind die Keys fest hinterlegt. Ohne Bestätigung durch einen Menschen verbindet sich der Dienst nie.
 2. **HAProxy / Zertifikat**: **Einlesen**, das Frontend wählen, den externen Hostnamen (z.B. `mail.domain.de`) und weitere Pflichtnamen (z.B. `autodiscover.domain.de`) angeben, dann **Zertifikat ermitteln**.
-3. **Exchange**: **Server aus AD ermitteln**, Server aktivieren und **Verbindung testen**. Getestet werden DNS, Ping, Ports, Remote-PowerShell, der Zertifikatsspeicher und das, was IIS tatsächlich ausliefert. Alles läuft als Dienstkonto.
+3. **Exchange**: **Server aus AD ermitteln**. Die Liste ist **nach DAG gruppiert**: zuerst die DAGs, dann Server ohne DAG, dann Edge. Jede Gruppe hat eine Kopfzeile mit Serverzahl, aktiven Servern und Zertifikatsstand; ist der Stand uneinheitlich, wird die Kopfzeile orange. Der Haken in der Kopfzeile wählt die ganze DAG an oder ab. Danach **Verbindung testen**; eine markierte Kopfzeile testet die ganze Gruppe. Getestet werden DNS, Ping, Ports, Remote-PowerShell, der Zertifikatsspeicher und das, was IIS tatsächlich ausliefert. Alles läuft als Dienstkonto.
 4. **Ausführung**: Erst **Dry-Run**, dann **Jetzt austauschen**. Danach die **Automatik** einschalten (tägliche Uhrzeit) und **Übernehmen** klicken.
 
 Jede Aktion speichert die aktuelle Konfiguration vorher im Dienst. Passwörter gehen einmal an den Dienst und kommen nie zurück; in der GUI steht dann „gespeichert“.
@@ -59,7 +59,8 @@ Jede Aktion speichert die aktuelle Konfiguration vorher im Dienst. Passwörter g
 3. Gewählt wird das Zertifikat mit Private Key, das alle Pflichtnamen abdeckt und am längsten gültig ist.
 4. Prüfung: Gültigkeit, Namen und Key. Hinweise gibt es bei ECDSA, fehlender Kette und baldigem Ablauf.
 5. Das PFX entsteht nur im Arbeitsspeicher, mit Einmal-Passwort.
-6. Pro Exchange-Server wird nur getauscht, **wenn das neue Zertifikat wirklich neuer ist**, oder wenn das aktive Zertifikat den Namen nicht abdeckt bzw. abgelaufen ist. Dann folgen `Import-ExchangeCertificate` und `Enable-ExchangeCertificate`. Zum Schluss wird per **TLS geprüft**, was IIS tatsächlich ausliefert.
+6. Ist „Vor jedem Lauf mit dem AD abgleichen“ an (Standard), wird die Serverliste aktualisiert: Neue Server werden übernommen und aktiviert (Edge nicht), nicht mehr vorhandene übersprungen und gemeldet. Ist das AD nicht erreichbar, läuft der Lauf mit der bekannten Liste.
+7. Pro Exchange-Server wird nur getauscht, **wenn das neue Zertifikat wirklich neuer ist**, oder wenn das aktive Zertifikat den Namen nicht abdeckt bzw. abgelaufen ist. Dann folgen `Import-ExchangeCertificate` und `Enable-ExchangeCertificate`. Zum Schluss wird per **TLS geprüft**, was IIS tatsächlich ausliefert.
 
 ## Selbstheilung
 
@@ -105,7 +106,7 @@ OpnSenseACME2Exchange.exe --run [--dry-run]   Diagnose-Lauf ohne Dienst (Exitcod
 
 ```
 dotnet build OpnSenseACME2Exchange.sln -c Release
-dotnet run --project tests/OpnSenseACME2Exchange.Tests      # 39 Logik-Tests (laufen auch unter Linux)
+dotnet run --project tests/OpnSenseACME2Exchange.Tests      # 43 Logik-Tests (laufen auch unter Linux)
 ```
 
 Die gesamte Fachlogik (Parser, Zertifikate, Entscheidung, Engine, **Dienstkern und Protokoll**) liegt in `OpnSenseACME2Exchange.Core` ohne externe Abhängigkeiten. Die GitHub Action baut auf `windows-latest`.

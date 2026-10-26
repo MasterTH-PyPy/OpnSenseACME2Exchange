@@ -69,6 +69,10 @@ public sealed class ExchangeServerEntry
     public string? Version { get; set; }
     public string? Dag { get; set; }
     public string? Site { get; set; }
+    public bool IsEdge { get; set; }
+
+    /// <summary>Beim letzten AD-Abgleich nicht mehr gefunden → wird bei Läufen übersprungen.</summary>
+    public bool MissingInAd { get; set; }
 
     /// <summary>Zuletzt funktionierende Remote-PowerShell-URI (wird selbstheilend gelernt).</summary>
     public string? PowerShellUri { get; set; }
@@ -99,6 +103,9 @@ public sealed class ExchangeSettings
     public bool VerifyAfterDeploy { get; set; } = true;
     public bool IisResetOnMismatch { get; set; }
     public bool RemoveReplacedCertificate { get; set; }
+
+    /// <summary>Vor jedem Lauf die Server neu aus dem AD ermitteln (neue mitnehmen, entfernte überspringen).</summary>
+    public bool AutoDiscoverBeforeRun { get; set; } = true;
 
     public string ServicesString()
     {

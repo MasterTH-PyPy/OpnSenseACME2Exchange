@@ -156,14 +156,7 @@ public sealed partial class MainForm : Form
         _cmbHostname.Text = _cfg.Selection.ExchangeHostname;
         _txtAdditionalNames.Text = string.Join(", ", _cfg.Selection.AdditionalRequiredNames);
 
-        _gridServers.Rows.Clear();
-        foreach (var s in _cfg.Exchange.Servers)
-        {
-            var i = _gridServers.Rows.Add(s.Enabled, s.Name, s.Fqdn, s.Version ?? "", s.Dag ?? "", s.Site ?? "",
-                s.PowerShellUri ?? "", s.CurrentCertificate ?? "", s.LastStatus ?? "");
-            _gridServers.Rows[i].Tag = s;
-            ColorStatusRow(_gridServers.Rows[i], s.LastStatus);
-        }
+        BindServersGrid();
 
         var e = _cfg.Exchange;
         _rbExCurrentUser.Checked = e.UseCurrentUser;
@@ -179,6 +172,7 @@ public sealed partial class MainForm : Form
         _chkVerify.Checked = e.VerifyAfterDeploy;
         _chkIisReset.Checked = e.IisResetOnMismatch;
         _chkRemoveOld.Checked = e.RemoveReplacedCertificate;
+        _chkAutoDiscover.Checked = e.AutoDiscoverBeforeRun;
         UpdateExchangeAuthUi();
 
         var a = _cfg.Auto;
@@ -250,7 +244,7 @@ public sealed partial class MainForm : Form
         cfg.Exchange.Servers = new List<ExchangeServerEntry>();
         foreach (DataGridViewRow row in _gridServers.Rows)
         {
-            if (row.IsNewRow) continue;
+            if (row.IsNewRow || row.Tag is ServerGroupHeader) continue;
             var fqdn = Cell(row, "Fqdn");
             var name = Cell(row, "Name");
             if (fqdn.Length == 0 && name.Length == 0) continue;
@@ -265,6 +259,7 @@ public sealed partial class MainForm : Form
             {
                 s.Version = old.Version; s.Dag = old.Dag; s.Site = old.Site;
                 s.PowerShellUri = old.PowerShellUri; s.CurrentCertificate = old.CurrentCertificate; s.LastStatus = old.LastStatus;
+                s.IsEdge = old.IsEdge; s.MissingInAd = old.MissingInAd;
             }
             cfg.Exchange.Servers.Add(s);
         }
@@ -281,6 +276,7 @@ public sealed partial class MainForm : Form
         e.VerifyAfterDeploy = _chkVerify.Checked;
         e.IisResetOnMismatch = _chkIisReset.Checked;
         e.RemoveReplacedCertificate = _chkRemoveOld.Checked;
+        e.AutoDiscoverBeforeRun = _chkAutoDiscover.Checked;
 
         cfg.Auto.Enabled = _chkAuto.Checked;
         cfg.Auto.Time = _dtpAutoTime.Value.ToString("HH:mm");

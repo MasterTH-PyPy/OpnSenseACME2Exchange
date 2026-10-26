@@ -37,7 +37,7 @@ partial class MainForm
     private TextBox _txtExUser = null!, _txtExPassword = null!;
     private ComboBox _cmbExAuth = null!;
     private CheckBox _chkIis = null!, _chkSmtp = null!, _chkImap = null!, _chkPop = null!;
-    private CheckBox _chkExportable = null!, _chkVerify = null!, _chkIisReset = null!, _chkRemoveOld = null!;
+    private CheckBox _chkExportable = null!, _chkVerify = null!, _chkIisReset = null!, _chkRemoveOld = null!, _chkAutoDiscover = null!;
 
     // Ausführung
     private Button _btnDryRun = null!, _btnRunNow = null!, _btnCancel = null!;
@@ -240,6 +240,7 @@ partial class MainForm
         _gridServers.Columns.Add(Col("Uri", "Remote-PowerShell", 18, readOnly: true));
         _gridServers.Columns.Add(Col("Cert", "Aktuelles IIS-Zertifikat", 24, readOnly: true));
         _gridServers.Columns.Add(Col("Status", "Status", 30, readOnly: true));
+        WireServerGrid();
 
         _btnDiscover = Btn("Exchange-Server aus AD ermitteln", async (_, _) => await DiscoverServersAsync());
         _btnTestServers = Btn("Verbindung testen (Auswahl / alle)", async (_, _) => await TestServersAsync());
@@ -273,12 +274,14 @@ partial class MainForm
         _chkVerify = Chk("Nach dem Tausch per TLS prüfen, was IIS ausliefert (inkl. Selbstheilung)");
         _chkIisReset = Chk("Bei Abweichung iisreset /noforce ausführen");
         _chkRemoveOld = Chk("Ersetztes altes Zertifikat entfernen (nur eindeutige Vorgänger)");
+        _chkAutoDiscover = Chk("Vor jedem Lauf mit dem AD abgleichen (neue Server mitnehmen, entfernte überspringen)");
         var opts = Rows(
             ("Dienste:", Flow(_chkIis, _chkSmtp, _chkImap, _chkPop)),
             ("", _chkExportable),
             ("", _chkVerify),
             ("", _chkIisReset),
-            ("", _chkRemoveOld));
+            ("", _chkRemoveOld),
+            ("", _chkAutoDiscover));
 
         var bottom = new TableLayoutPanel { ColumnCount = 2, Dock = DockStyle.Bottom, AutoSize = true };
         bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));

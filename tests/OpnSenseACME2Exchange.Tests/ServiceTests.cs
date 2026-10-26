@@ -41,7 +41,14 @@ public sealed class FakeBackend(FakeOpnSense opn, FakeExchange ex, string dir) :
 
     public ISshSessionFactory CreateSshFactory(AppConfig cfg, Func<OpnSenseNode, string, bool> confirm) => new HostKeyCheckingFactory(opn, confirm);
     public IExchangeOperations CreateExchange(AppConfig cfg) => ex;
-    public List<ExchangeServerDiscovery> DiscoverExchangeServers(AppConfig cfg) => Discovered.ToList();
+    public bool DiscoverFails { get; set; }
+    public int DiscoverCalls;
+    public List<ExchangeServerDiscovery> DiscoverExchangeServers(AppConfig cfg)
+    {
+        DiscoverCalls++;
+        if (DiscoverFails) throw new InvalidOperationException("Domänencontroller nicht erreichbar");
+        return Discovered.ToList();
+    }
     public RunResult Guard(Func<RunResult> run, bool dryRun) { GuardCalls++; return run(); }
     public void ApplyLogging(AppConfig cfg) { }
 }
@@ -231,6 +238,90 @@ public static class ServiceTests
             ServiceScheduler.AfterScheduledRun(st, ServiceTickAction.ScheduledRun, false, t);
             for (int i = 0; i < 3; i++) ServiceScheduler.AfterScheduledRun(st, ServiceTickAction.Retry, false, t.AddHours(i + 1));
             Assert.True(st.RetryAt == null, "nach 3 Wiederholungen Schluss");
+        });
+
+        test("Gruppierung: DAGs alphabetisch, dann ohne DAG, dann Edge; Zertifikatsstand je Gruppe", () =>
+        {
+            ExchangeServerEntry E(string name, string? dag, string? site = null, bool edge = false, string? cert = null, bool on = true) =>
+                new() { Name = name, Fqdn = name.ToLowerInvariant() + ".corp.local", Dag = dag, Site = site, IsEdge = edge, CurrentCertificate = cert, Enabled = on };
+            var groups = ServerGrouping.Group(new[]
+            {
+                E("EX-Z", null), E("EDGE1", null, edge: true, on: false), E("EX2", "DAG-B", "HQ", cert: "AAA bis 24.01.2027"),
+                E("EX1", "DAG-B", "HQ", cert: "AAA bis 24.01.2027"), E("EX9", "DAG-A", "DR", cert: "BBB bis 01.12.2026"),
+                E("EX8", "dag-a", "AS", cert: "CCC bis 24.01.2027", on: false)
+            });
+            Assert.Equal("DAG DAG-A|DAG DAG-B|Ohne DAG|Edge-Transport", string.Join("|", groups.Select(g => g.Title)), "Reihenfolge");
+            Assert.Equal("EX8,EX9", string.Join(",", groups[0].Servers.Select(x => x.Name)), "DAG-Name unabhängig von Groß/klein, sortiert nach Site");
+            Assert.True(groups[1].CertificatesConsistent && groups[1].Summary.Contains("alle gleiches Zertifikat bis 24.01.2027"), groups[1].Summary);
+            Assert.False(groups[0].CertificatesConsistent, "uneinheitlich erkannt");
+            Assert.True(groups[0].Summary.Contains("UNEINHEITLICH") && groups[0].Summary.Contains("01.12.2026"), groups[0].Summary);
+            Assert.True(!groups[0].AllEnabled && !groups[0].NoneEnabled, "teilweise aktiv");
+            Assert.True(groups[3].NoneEnabled, "Edge aus");
+        });
+
+        test("Dienst: AD-Abgleich vor dem Lauf – neuer Server wird mitgenommen, entfernter übersprungen", () =>
+        {
+            var (core, backend, store, _, ex, newThumb, _) = Setup();
+            TrustAll(core);
+            backend.Discovered.Add(new ExchangeServerDiscovery("EXCH1", "exch1.corp.local", "15.2", "DAG01", "HQ", false));
+            backend.Discovered.Add(new ExchangeServerDiscovery("EXCH2", "exch2.corp.local", "15.2", "DAG01", "HQ", false));
+            backend.Discovered.Add(new ExchangeServerDiscovery("EXCH3", "exch3.corp.local", "15.2", "DAG01", "DR", false));
+
+            Call(core, Commands.StartRun, new StartRunRequest(false));
+            core.CurrentRunTask!.Wait(TimeSpan.FromSeconds(30));
+            var r1 = Payload<StatusDto>(Call(core, Commands.GetStatus)).LastRunResult!;
+            Assert.Equal(3, r1.Servers.Count(x => x.Outcome == ServerOutcome.Ok), "alle drei getauscht: " + r1.Summary);
+            Assert.True(ex.Stores["exch3.corp.local"].Any(c => c.Thumbprint == newThumb), "neuer Server hat Zertifikat");
+            Assert.True(r1.Warnings.Any(w => w.Contains("1 neue")), "Hinweis auf neuen Server");
+
+            backend.Discovered.RemoveAll(d => d.Name == "EXCH2");
+            ex.Calls.Clear();
+            Call(core, Commands.StartRun, new StartRunRequest(false));
+            core.CurrentRunTask!.Wait(TimeSpan.FromSeconds(30));
+            var r2 = Payload<StatusDto>(Call(core, Commands.GetStatus)).LastRunResult!;
+            Assert.True(r2.Servers.Any(x => x.Server == "EXCH2" && x.Outcome == ServerOutcome.Warning && x.Action == "Übersprungen"), "EXCH2 übersprungen");
+            Assert.False(ex.Calls.Any(c => c.Contains("exch2")), "EXCH2 nicht angefasst");
+            Assert.True(store.Load().Exchange.Servers.Single(x => x.Name == "EXCH2").MissingInAd, "markiert");
+
+            backend.Discovered.Add(new ExchangeServerDiscovery("EXCH2", "exch2.corp.local", "15.2", "DAG01", "HQ", false));
+            Call(core, Commands.DiscoverServers);
+            Assert.False(store.Load().Exchange.Servers.Single(x => x.Name == "EXCH2").MissingInAd, "wieder da");
+        });
+
+        test("Dienst: AD weg oder leer → Lauf mit bekannter Liste, nichts wird als fehlend markiert", () =>
+        {
+            var (core, backend, store, _, _, _, _) = Setup();
+            TrustAll(core);
+            backend.DiscoverFails = true;
+            Call(core, Commands.StartRun, new StartRunRequest(true));
+            core.CurrentRunTask!.Wait(TimeSpan.FromSeconds(30));
+            var r = Payload<StatusDto>(Call(core, Commands.GetStatus)).LastRunResult!;
+            Assert.True(r.Warnings.Any(w => w.Contains("AD-Abgleich vor dem Lauf fehlgeschlagen")), "Warnung");
+            Assert.Equal(2, r.Servers.Count(x => x.Outcome == ServerOutcome.DryRun), "trotzdem beide geprüft");
+
+            backend.DiscoverFails = false; // Discovered ist leer
+            Call(core, Commands.StartRun, new StartRunRequest(true));
+            core.CurrentRunTask!.Wait(TimeSpan.FromSeconds(30));
+            Assert.False(store.Load().Exchange.Servers.Any(x => x.MissingInAd), "leeres Ergebnis markiert nichts");
+        });
+
+        test("Dienst: Abgleich abschaltbar; GUI kann AD-Felder nicht überschreiben", () =>
+        {
+            var (core, backend, store, _, _, _, _) = Setup(c => c.Exchange.AutoDiscoverBeforeRun = false);
+            TrustAll(core);
+            Call(core, Commands.StartRun, new StartRunRequest(true));
+            core.CurrentRunTask!.Wait(TimeSpan.FromSeconds(30));
+            Assert.Equal(0, backend.DiscoverCalls, "kein AD-Abgleich");
+
+            backend.Discovered.Add(new ExchangeServerDiscovery("EXCH1", "exch1.corp.local", "15.2", "DAG01", "HQ", false));
+            backend.Discovered.Add(new ExchangeServerDiscovery("EXCH2", "exch2.corp.local", "15.2", "DAG01", "HQ", true));
+            Call(core, Commands.DiscoverServers);
+            var dto = Payload<ConfigDto>(Call(core, Commands.GetConfig));
+            foreach (var x in dto.Config.Exchange.Servers) { x.IsEdge = false; x.Dag = null; x.MissingInAd = true; }
+            Call(core, Commands.SaveConfig, new SaveConfigRequest { Config = dto.Config });
+            var saved = store.Load().Exchange.Servers;
+            Assert.True(saved.Single(x => x.Name == "EXCH2").IsEdge, "Edge bleibt");
+            Assert.True(saved.All(x => x.Dag == "DAG01" && !x.MissingInAd), "DAG/Missing bleiben");
         });
 
         test("Pipe: echte Named Pipe, Anfrage → Dienst → Antwort", () =>

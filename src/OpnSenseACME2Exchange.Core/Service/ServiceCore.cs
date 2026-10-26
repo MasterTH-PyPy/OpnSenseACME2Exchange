@@ -279,6 +279,12 @@ public sealed class ServiceCore
                 {
                     var known = old.Exchange.Servers.FirstOrDefault(o => o.Fqdn.Equals(s.Fqdn, StringComparison.OrdinalIgnoreCase));
                     if (known == null) continue;
+                    // AD-Daten gehören dem Dienst (aus der Ermittlung), nicht der GUI
+                    s.IsEdge = known.IsEdge;
+                    s.MissingInAd = known.MissingInAd;
+                    s.Dag = known.Dag ?? s.Dag;
+                    s.Site = known.Site ?? s.Site;
+                    s.Version = known.Version ?? s.Version;
                     s.PowerShellUri ??= known.PowerShellUri;
                     s.CurrentCertificate ??= known.CurrentCertificate;
                     s.LastStatus ??= known.LastStatus;
@@ -378,7 +384,15 @@ public sealed class ServiceCore
     private object Discover()
     {
         var found = _backend.DiscoverExchangeServers(_cfg);
-        int added = 0;
+        var (added, missing) = MergeDiscovery(found);
+        Log.Info($"{found.Count} Exchange-Server im AD, {added} neu, {missing} nicht mehr vorhanden.");
+        return new DiscoveryResultDto(found, added);
+    }
+
+    /// <summary>Gleicht die Serverliste mit dem AD ab: neue hinzufügen (Edge deaktiviert), verschwundene markieren.</summary>
+    private (int Added, int Missing) MergeDiscovery(List<ExchangeServerDiscovery> found)
+    {
+        int added = 0, missing = 0;
         lock (_cfgLock)
         {
             foreach (var d in found)
@@ -390,22 +404,61 @@ public sealed class ServiceCore
                     existing = new ExchangeServerEntry
                     {
                         Enabled = !d.IsEdge,
-                        LastStatus = d.IsEdge ? "Edge-Transport – deaktiviert" : "neu ermittelt – bitte Verbindung testen"
+                        LastStatus = d.IsEdge ? "Edge-Transport – deaktiviert" : "neu im AD ermittelt"
                     };
                     _cfg.Exchange.Servers.Add(existing);
                     added++;
+                    Log.Info($"Neuer Exchange-Server: {d.Name} ({d.Fqdn}, DAG {d.Dag ?? "–"}){(d.IsEdge ? " – Edge, deaktiviert" : "")}.");
+                }
+                else if (existing.MissingInAd)
+                {
+                    Log.Info($"{existing.Name} ist wieder im AD vorhanden.");
+                    if (existing.LastStatus?.StartsWith("nicht (mehr)", StringComparison.Ordinal) == true) existing.LastStatus = null;
                 }
                 existing.Name = d.Name;
                 existing.Fqdn = d.Fqdn;
                 existing.Version = d.Version;
                 existing.Dag = d.Dag;
                 existing.Site = d.Site;
+                existing.IsEdge = d.IsEdge;
+                existing.MissingInAd = false;
             }
             foreach (var s in _cfg.Exchange.Servers.Where(s => !found.Any(d => d.Fqdn.Equals(s.Fqdn, StringComparison.OrdinalIgnoreCase))))
+            {
+                if (!s.MissingInAd) Log.Warn($"{s.Name} ({s.Fqdn}) ist nicht mehr im AD – wird bei Läufen übersprungen.");
+                s.MissingInAd = true;
                 s.LastStatus = "nicht (mehr) im AD gefunden";
+                missing++;
+            }
         }
-        Log.Info($"{found.Count} Exchange-Server im AD, {added} neu.");
-        return new DiscoveryResultDto(found, added);
+        return (added, missing);
+    }
+
+    /// <summary>Vor einem Lauf: Serverliste aktualisieren. Scheitert das AD, wird mit der bekannten Liste weitergemacht.</summary>
+    private List<string> RefreshServersBeforeRun()
+    {
+        var warnings = new List<string>();
+        if (!_cfg.Exchange.AutoDiscoverBeforeRun) return warnings;
+        try
+        {
+            var found = _backend.DiscoverExchangeServers(_cfg);
+            if (found.Count == 0)
+            {
+                warnings.Add("AD-Abfrage lieferte keine Exchange-Server – bekannte Serverliste wird verwendet.");
+                return warnings;
+            }
+            var (added, missing) = MergeDiscovery(found);
+            if (added > 0) warnings.Add($"{added} neue(r) Exchange-Server aus dem AD übernommen.");
+            if (missing > 0) warnings.Add($"{missing} Exchange-Server nicht mehr im AD – übersprungen.");
+            Log.Info($"AD-Abgleich vor dem Lauf: {found.Count} Server, {added} neu, {missing} fehlen.");
+        }
+        catch (Exception ex)
+        {
+            var msg = "AD-Abgleich vor dem Lauf fehlgeschlagen – bekannte Serverliste wird verwendet: " + Log.Describe(ex);
+            warnings.Add(msg);
+            Log.Warn(msg);
+        }
+        return warnings;
     }
 
     private object TestServers(List<string> fqdns, CancellationToken ct)
@@ -454,11 +507,13 @@ public sealed class ServiceCore
         RunResult result;
         try
         {
+            var preWarnings = RefreshServersBeforeRun();
             var unknown = new List<UnknownHostKey>();
             var engine = new DeployEngine(_cfg, Source(unknown), _backend.CreateExchange(_cfg), _backend.TlsProbe, EngineDelay);
             engine.ServerUpdated += sr => { lock (live) live.Servers.Add(sr); };
             Log.Info($"Lauf ausgelöst: {trigger}");
             result = _backend.Guard(() => engine.Run(dryRun, cts.Token), dryRun);
+            result.Warnings.InsertRange(0, preWarnings);
             foreach (var u in unknown)
                 result.Warnings.Add($"Unbekannter SSH-Hostkey für {u.Host} ({u.Fingerprint}) – in der GUI unter OPNsense bestätigen.");
         }

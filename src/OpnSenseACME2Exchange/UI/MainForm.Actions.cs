@@ -207,8 +207,7 @@ partial class MainForm
 
     private async Task TestServersAsync()
     {
-        var fqdns = _gridServers.SelectedRows.Cast<DataGridViewRow>()
-            .Where(r => !r.IsNewRow).Select(r => Cell(r, "Fqdn")).Where(f => f.Length > 0).ToList();
+        var fqdns = SelectedServerFqdns();
         if (_gridServers.Rows.Cast<DataGridViewRow>().All(r => r.IsNewRow))
         {
             MessageBox.Show(this, "Keine Exchange-Server eingetragen – zuerst 'aus AD ermitteln'.", "Exchange",
@@ -347,20 +346,7 @@ partial class MainForm
 
     private void ShowRun(RunResult r, bool live)
     {
-        _gridResults.Rows.Clear();
-        foreach (var sr in r.Servers)
-        {
-            var outcome = sr.Outcome switch
-            {
-                ServerOutcome.Ok => "OK",
-                ServerOutcome.Skipped => "aktuell",
-                ServerOutcome.DryRun => "simuliert",
-                ServerOutcome.Warning => "WARNUNG",
-                _ => "FEHLER"
-            };
-            var i = _gridResults.Rows.Add(sr.Server, sr.Action, outcome, sr.Details);
-            _gridResults.Rows[i].DefaultCellStyle.BackColor = UiKit.OutcomeColor(sr.Outcome);
-        }
+        ShowRunGrouped(r);
 
         var sb = new StringBuilder();
         if (live) sb.Append($"{(r.DryRun ? "Dry-Run" : "Austausch")} läuft seit {r.StartedAt:HH:mm:ss} – {r.Servers.Count} Server bearbeitet …");
