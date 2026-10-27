@@ -19,10 +19,16 @@
     <Product>OpnSenseACME2Exchange</Product>
     <Description>Verteilt das ACME-Zertifikat aus dem OPNsense-HAProxy auf die Exchange-Server</Description>
     <Copyright>Rudolf Kasper</Copyright>
+
+    <!-- Bekannte Sicherheitslücken (hoch/kritisch) in Paketen brechen den Build – auch transitive -->
+    <NuGetAudit>true</NuGetAudit>
+    <NuGetAuditMode>all</NuGetAuditMode>
+    <WarningsAsErrors>$(WarningsAsErrors);NU1903;NU1904</WarningsAsErrors>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="SSH.NET" Version="2025.*" />
+    <!-- >= 2026.0.0: behebt GHSA-q939-rpr3-3284 und GHSA-mggc-4xg6-vcxf (ScpClient; wird hier nicht genutzt) -->
+    <PackageReference Include="SSH.NET" Version="2026.0.0" />
     <PackageReference Include="System.DirectoryServices" Version="10.0.*" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.*" />
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.*" />
